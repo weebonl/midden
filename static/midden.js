@@ -60,7 +60,7 @@
     }
   };
 
-  function setupDropZone(dropZone, input) {
+  function setupDropZone(dropZone, input, onFilesChanged) {
     ["dragenter", "dragover"].forEach((eventName) => {
       dropZone.addEventListener(eventName, (event) => {
         event.preventDefault();
@@ -78,6 +78,7 @@
     dropZone.addEventListener("drop", (event) => {
       if (event.dataTransfer && event.dataTransfer.files.length > 0) {
         input.files = event.dataTransfer.files;
+        onFilesChanged();
       }
     });
   }
@@ -89,10 +90,41 @@
   const uploadDropZone = uploadForm.querySelector("[data-drop-zone]");
   const uploadProgress = uploadForm.querySelector("[data-upload-progress]");
   const uploadStatus = uploadForm.querySelector("[data-upload-status]");
+  const uploadSelectedFile = uploadForm.querySelector("[data-selected-file]");
   const uploadButton = uploadForm.querySelector("button[type=submit]");
   const chunkSize = 1024 * 1024;
 
-  if (uploadDropZone && uploadInput) setupDropZone(uploadDropZone, uploadInput);
+  function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes)) return "";
+    if (bytes < 1024) return bytes + " B";
+    const units = ["KB", "MB", "GB"];
+    let size = bytes / 1024;
+    let unit = units[0];
+    for (let index = 1; index < units.length && size >= 1024; index += 1) {
+      size /= 1024;
+      unit = units[index];
+    }
+    return size.toFixed(size < 10 ? 1 : 0) + " " + unit;
+  }
+
+  function updateSelectedFile() {
+    if (!uploadSelectedFile) return;
+    const file = uploadInput && uploadInput.files ? uploadInput.files[0] : null;
+    if (!file) {
+      uploadSelectedFile.textContent = "No file selected";
+      uploadSelectedFile.classList.add("is-empty");
+      return;
+    }
+    const size = formatFileSize(file.size);
+    uploadSelectedFile.textContent = size ? file.name + " (" + size + ")" : file.name;
+    uploadSelectedFile.classList.remove("is-empty");
+  }
+
+  if (uploadDropZone && uploadInput) setupDropZone(uploadDropZone, uploadInput, updateSelectedFile);
+  if (uploadInput) {
+    uploadInput.addEventListener("change", updateSelectedFile);
+    updateSelectedFile();
+  }
   if (!window.fetch || !window.Blob) return;
 
   function setUploadStatus(message, isError) {
@@ -114,64 +146,7 @@
     parent.appendChild(link);
   }
 
-  function fileLabel(file) {
-    return file && file.name ? file.name : "Uploaded file";
-  }
-
-  function fileExtension(file) {
-    if (!file || !file.name || !file.name.includes(".")) return "";
-    return file.name.split(".").pop().toLowerCase();
-  }
-
-  function isPreviewImage(file) {
-    const type = file && file.type ? file.type.toLowerCase() : "";
-    return (
-      type === "image/png" ||
-      type === "image/gif" ||
-      type === "image/jpeg" ||
-      ["png", "gif", "jpg", "jpeg"].includes(fileExtension(file))
-    );
-  }
-
-  function isPreviewText(file) {
-    const type = file && file.type ? file.type.toLowerCase() : "";
-    return (
-      type.startsWith("text/") ||
-      ["application/json", "application/xml", "application/javascript"].includes(type) ||
-      ["txt", "md", "json", "xml", "js", "css", "csv", "log"].includes(fileExtension(file))
-    );
-  }
-
-  function appendUploadPreview(result, file) {
-    if (!file) return;
-    if (result.rawUrl && isPreviewImage(file)) {
-      const wrapper = document.createElement("p");
-      const image = document.createElement("img");
-      image.className = "file-preview-media";
-      image.src = result.rawUrl;
-      image.alt = fileLabel(file);
-      wrapper.appendChild(image);
-      uploadStatus.appendChild(wrapper);
-      return;
-    }
-    if (isPreviewText(file) && file.size <= 128 * 1024 && typeof file.text === "function") {
-      const preview = document.createElement("pre");
-      const code = document.createElement("code");
-      code.textContent = "Loading preview...";
-      preview.appendChild(code);
-      uploadStatus.appendChild(preview);
-      file
-        .text()
-        .then((text) => {
-          code.textContent = text.slice(0, 8000);
-        })
-        .catch(() => {
-          preview.remove();
-        });
-    }
-  }
-
-  function setUploadCompleteStatus(result, file) {
+  function setUploadCompleteStatus(result) {
     if (!uploadStatus) return;
     uploadStatus.hidden = false;
     uploadStatus.classList.remove("error");
@@ -195,8 +170,6 @@
       if (result.deleteUrl) appendLink(links, "Delete", result.deleteUrl);
       uploadStatus.appendChild(links);
     }
-
-    appendUploadPreview(result, file);
 
     if (result.deleteToken) {
       const token = document.createElement("p");
@@ -317,7 +290,7 @@
         if (uploadProgress) uploadProgress.value = Math.round((offset / file.size) * 100);
         if (result.finalUrl) {
           forgetLocation(file);
-          setUploadCompleteStatus(result, file);
+          setUploadCompleteStatus(result);
         }
       }
       forgetLocation(file);

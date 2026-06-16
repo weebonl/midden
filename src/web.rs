@@ -257,13 +257,11 @@ async fn upload_form_file(
         requested_visibility(&settings, form.visibility.as_deref())?,
     )
     .await?;
-    let preview = file_preview_context(&state, &result.file).await?;
     let page = serde_json::json!({
         "url": result.url,
         "raw_url": result.raw_url,
         "delete_token": result.delete_token,
         "file": result.file,
-        "preview": preview,
     });
     Ok(render(&state, "upload_result.html", &settings, user.as_ref(), page)?.into_response())
 }
@@ -337,13 +335,11 @@ async fn url_upload(
         requested_visibility(&settings, form.visibility.as_deref())?,
     )
     .await?;
-    let preview = file_preview_context(&state, &result.file).await?;
     let page = serde_json::json!({
         "url": result.url,
         "raw_url": result.raw_url,
         "delete_token": result.delete_token,
         "file": result.file,
-        "preview": preview,
     });
     Ok(render(&state, "upload_result.html", &settings, user.as_ref(), page)?.into_response())
 }
@@ -2384,7 +2380,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_upload_result_shows_image_preview() {
+    async fn index_page_exposes_selected_file_status() {
+        let issuer = spawn_oidc_provider(serde_json::json!({
+            "sub": "unused-selected-file",
+            "email": "unused-selected-file@example.test",
+            "groups": ["admins"]
+        }))
+        .await;
+        let state = test_state(issuer).await;
+        let response = state
+            .router()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("data-selected-file"));
+        assert!(body.contains("No file selected"));
+    }
+
+    #[tokio::test]
+    async fn browser_upload_result_keeps_uploaded_file_as_links() {
         let issuer = spawn_oidc_provider(serde_json::json!({
             "sub": "unused-browser-upload",
             "email": "unused-browser-upload@example.test",
@@ -2419,8 +2445,10 @@ mod tests {
 
         assert_eq!(upload.status(), StatusCode::OK);
         let body = upload.text().await.unwrap();
-        assert!(body.contains("class=\"file-preview-media\""));
-        assert!(body.contains("alt=\"sample.png\""));
+        assert!(body.contains("Open link"));
+        assert!(body.contains("Raw file"));
+        assert!(!body.contains("class=\"file-preview-media\""));
+        assert!(!body.contains("alt=\"sample.png\""));
     }
 
     #[tokio::test]

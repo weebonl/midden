@@ -5,11 +5,6 @@
   <p>Your file is available at:</p>
   <p x-data="{ copied: false }"><input class="copy-field" value="{{ page.url }}" readonly x-ref="url"> <button type="button" x-on:click="middenCopy($refs.url.value).then(() => { copied = true; setTimeout(() => copied = false, 1600) })" x-text="copied ? 'Copied' : 'Copy link'">Copy link</button></p>
   <p><a href="{{ page.url }}">Open link</a> | <a href="{{ page.raw_url }}">Raw file</a> | <a href="/delete/file/{{ page.file.public_id }}">Delete</a></p>
-  {% if page.preview.is_image %}
-    <p><img class="file-preview-media" src="{{ page.raw_url }}" alt="{{ page.file.original_filename or "Uploaded file" }}"></p>
-  {% elif page.preview.text %}
-    <pre><code>{{ page.preview.text }}</code></pre>
-  {% endif %}
   {% if page.delete_token %}
     <p class="notice" x-data="{ copied: false }">Delete token, shown once: <code x-ref="token">{{ page.delete_token }}</code> <button type="button" x-on:click="middenCopy($refs.token.textContent).then(() => { copied = true; setTimeout(() => copied = false, 1600) })" x-text="copied ? 'Copied' : 'Copy token'">Copy token</button></p>
     <p>Log in later and use <a href="/claim/file/{{ page.file.public_id }}">claim file</a> with that token to attach it to your account.</p>

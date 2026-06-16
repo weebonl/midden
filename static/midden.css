@@ -170,6 +170,15 @@ textarea {
   font-size: 14px;
 }
 
+.selected-file {
+  margin: 4px 0 14px;
+  overflow-wrap: anywhere;
+}
+
+.selected-file:not(.is-empty) {
+  color: var(--ink);
+}
+
 button:disabled {
   border-color: var(--line);
   color: var(--muted);
