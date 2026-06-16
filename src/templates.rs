@@ -68,10 +68,6 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
         include_str!("../templates/upload_result.html"),
     ),
     (
-        "resumable_upload.html",
-        include_str!("../templates/resumable_upload.html"),
-    ),
-    (
         "url_upload.html",
         include_str!("../templates/url_upload.html"),
     ),

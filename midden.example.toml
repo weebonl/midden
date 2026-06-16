@@ -39,9 +39,8 @@ paste_content_search = false
 paste_editing = false
 
 [limits]
-max_upload_bytes = 209715200
+max_upload_bytes = 2147483648
 max_paste_bytes = 1048576
-max_tus_upload_bytes = 2147483648
 # default_file_expiry = "30d"
 # default_paste_expiry = "7d"
 # Backward-compatible aggregate anonymous daily quota.

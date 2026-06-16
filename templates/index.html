@@ -4,7 +4,7 @@
   <section class="upload-box">
     {% if settings.features.files %}
       <p>Uploads up to {{ page.max_upload }} are allowed.</p>
-      <form method="post" action="/" enctype="multipart/form-data" data-upload-form>
+      <form method="post" action="/" enctype="multipart/form-data" data-browser-upload-form>
         <label class="drop-zone" data-drop-zone>
           <input type="file" name="file" required>
           <span>Select or drop file</span>
@@ -15,17 +15,20 @@
         {% endif %}
         <p class="form-row"><button type="submit">Upload file</button></p>
         <progress class="upload-progress" max="100" value="0" hidden data-upload-progress></progress>
+        <div class="notice" hidden data-upload-status></div>
       </form>
     {% else %}
       <p>File uploads are disabled on this instance.</p>
     {% endif %}
   </section>
 
-  <section class="plain-section">
-    {% if settings.features.pastes %}<a href="/p/new">Create a paste</a>{% endif %}
-    {% if settings.features.files %} | <a href="/upload/resumable">Resumable upload</a>{% endif %}
-    {% if settings.features.upload_by_url %} | <a href="/url-upload">Upload via URL</a>{% endif %}
-  </section>
+  {% if settings.features.pastes or settings.features.upload_by_url %}
+    <section class="plain-section">
+      {% if settings.features.pastes %}<a href="/p/new">Create a paste</a>{% endif %}
+      {% if settings.features.pastes and settings.features.upload_by_url %} | {% endif %}
+      {% if settings.features.upload_by_url %}<a href="/url-upload">Upload via URL</a>{% endif %}
+    </section>
+  {% endif %}
 
   {% if settings.branding.homepage_blocks %}
     <section class="homepage-blocks">

@@ -49,59 +49,71 @@
     });
   }
 
-  const form = document.querySelector("[data-upload-form]");
-  const dropZone = document.querySelector("[data-drop-zone]");
-  const input = dropZone ? dropZone.querySelector("input[type=file]") : null;
-  const progress = document.querySelector("[data-upload-progress]");
+  const uploadForm = document.querySelector("[data-browser-upload-form]");
+  if (!uploadForm) return;
 
-  if (form && dropZone && input) {
-    setupDropZone(dropZone, input);
-    form.addEventListener("submit", (event) => {
-      if (!progress || !window.XMLHttpRequest || !window.FormData) return;
-      event.preventDefault();
-      ensureCsrfField(form);
-      progress.hidden = false;
-      progress.value = 0;
-
-      const request = new XMLHttpRequest();
-      request.open("POST", form.action || window.location.href);
-      request.upload.addEventListener("progress", (progressEvent) => {
-        if (progressEvent.lengthComputable) {
-          progress.value = Math.round((progressEvent.loaded / progressEvent.total) * 100);
-        } else {
-          progress.removeAttribute("value");
-        }
-      });
-      request.addEventListener("load", () => {
-        document.open();
-        document.write(request.responseText);
-        document.close();
-      });
-      request.addEventListener("error", () => {
-        progress.removeAttribute("value");
-        form.submit();
-      });
-      request.send(new FormData(form));
-    });
-  }
-
-  const tusForm = document.querySelector("[data-tus-form]");
-  if (!tusForm || !window.fetch || !window.Blob) return;
-
-  const tusInput = tusForm.querySelector("input[type=file]");
-  const tusDropZone = tusForm.querySelector(".drop-zone");
-  const tusProgress = tusForm.querySelector("[data-tus-progress]");
-  const tusStatus = tusForm.querySelector("[data-tus-status]");
-  const tusButton = tusForm.querySelector("button[type=submit]");
+  const uploadInput = uploadForm.querySelector("input[type=file]");
+  const uploadDropZone = uploadForm.querySelector("[data-drop-zone]");
+  const uploadProgress = uploadForm.querySelector("[data-upload-progress]");
+  const uploadStatus = uploadForm.querySelector("[data-upload-status]");
+  const uploadButton = uploadForm.querySelector("button[type=submit]");
   const chunkSize = 1024 * 1024;
 
-  if (tusDropZone && tusInput) setupDropZone(tusDropZone, tusInput);
+  if (uploadDropZone && uploadInput) setupDropZone(uploadDropZone, uploadInput);
+  if (!window.fetch || !window.Blob) return;
 
-  function setTusStatus(message, isError) {
-    if (!tusStatus) return;
-    tusStatus.hidden = false;
-    tusStatus.textContent = message;
-    tusStatus.classList.toggle("error", Boolean(isError));
+  function setUploadStatus(message, isError) {
+    if (!uploadStatus) return;
+    uploadStatus.hidden = false;
+    uploadStatus.textContent = message;
+    uploadStatus.classList.toggle("error", Boolean(isError));
+  }
+
+  function absoluteUrl(value) {
+    if (!value) return null;
+    return new URL(value, window.location.origin).toString();
+  }
+
+  function appendLink(parent, label, href) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.textContent = label;
+    parent.appendChild(link);
+  }
+
+  function setUploadCompleteStatus(result) {
+    if (!uploadStatus) return;
+    uploadStatus.hidden = false;
+    uploadStatus.classList.remove("error");
+    uploadStatus.replaceChildren();
+
+    const headline = document.createElement("p");
+    headline.appendChild(document.createTextNode("Upload complete: "));
+    if (result.finalUrl) {
+      appendLink(headline, result.finalUrl, result.finalUrl);
+    } else {
+      headline.appendChild(document.createTextNode("file saved"));
+    }
+    uploadStatus.appendChild(headline);
+
+    if (result.rawUrl || result.deleteUrl) {
+      const links = document.createElement("p");
+      if (result.rawUrl) appendLink(links, "Raw file", result.rawUrl);
+      if (result.rawUrl && result.deleteUrl) {
+        links.appendChild(document.createTextNode(" | "));
+      }
+      if (result.deleteUrl) appendLink(links, "Delete", result.deleteUrl);
+      uploadStatus.appendChild(links);
+    }
+
+    if (result.deleteToken) {
+      const token = document.createElement("p");
+      token.appendChild(document.createTextNode("Delete token, shown once: "));
+      const code = document.createElement("code");
+      code.textContent = result.deleteToken;
+      token.appendChild(code);
+      uploadStatus.appendChild(token);
+    }
   }
 
   function metadataValue(value) {
@@ -138,17 +150,20 @@
       "content-type " + metadataValue(file.type || "application/octet-stream"),
     ];
     if (expires) metadata.push("expires " + metadataValue(expires));
-    const visibility = tusForm.querySelector("select[name=visibility]")?.value;
+    const visibility = uploadForm.querySelector("select[name=visibility]")?.value;
     if (visibility) metadata.push("visibility " + metadataValue(visibility));
+    const headers = {
+      "Tus-Resumable": "1.0.0",
+      "Upload-Length": String(file.size),
+      "Upload-Metadata": metadata.join(","),
+    };
+    const csrf = readCookie(csrfCookie);
+    if (csrf) headers["X-CSRF-Token"] = decodeURIComponent(csrf);
     const response = await fetch("/tus", {
       method: "POST",
-      headers: {
-        "Tus-Resumable": "1.0.0",
-        "Upload-Length": String(file.size),
-        "Upload-Metadata": metadata.join(","),
-      },
+      headers,
     });
-    if (!response.ok) throw new Error("Upload creation failed");
+    if (!response.ok) throw new Error("Upload creation failed (" + response.status + ")");
     return new URL(response.headers.get("location"), window.location.origin).toString();
   }
 
@@ -157,7 +172,7 @@
       method: "HEAD",
       headers: { "Tus-Resumable": "1.0.0" },
     });
-    if (!response.ok) throw new Error("Upload resume failed");
+    if (!response.ok) throw new Error("Upload resume failed (" + response.status + ")");
     return Number(response.headers.get("upload-offset") || "0");
   }
 
@@ -172,22 +187,25 @@
       },
       body: chunk,
     });
-    if (!response.ok) throw new Error("Upload chunk failed");
+    if (!response.ok) throw new Error("Upload chunk failed (" + response.status + ")");
     return {
       offset: Number(response.headers.get("upload-offset") || String(offset + chunk.size)),
-      finalUrl: response.headers.get("location"),
+      finalUrl: absoluteUrl(response.headers.get("location")),
+      rawUrl: absoluteUrl(response.headers.get("x-midden-raw-url")),
+      deleteUrl: absoluteUrl(response.headers.get("x-midden-delete-url")),
+      deleteToken: response.headers.get("x-midden-delete-token"),
     };
   }
 
-  tusForm.addEventListener("submit", async (event) => {
+  uploadForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const file = tusInput && tusInput.files ? tusInput.files[0] : null;
+    const file = uploadInput && uploadInput.files ? uploadInput.files[0] : null;
     if (!file) return;
-    const expires = tusForm.querySelector("input[name=expires]")?.value.trim();
-    if (tusButton) tusButton.disabled = true;
-    if (tusProgress) {
-      tusProgress.hidden = false;
-      tusProgress.value = 0;
+    const expires = uploadForm.querySelector("input[name=expires]")?.value.trim();
+    if (uploadButton) uploadButton.disabled = true;
+    if (uploadProgress) {
+      uploadProgress.hidden = false;
+      uploadProgress.value = 0;
     }
     try {
       let location = storedLocation(file);
@@ -204,19 +222,19 @@
       while (offset < file.size) {
         const result = await sendTusChunk(location, file, offset);
         offset = result.offset;
-        if (tusProgress) tusProgress.value = Math.round((offset / file.size) * 100);
+        if (uploadProgress) uploadProgress.value = Math.round((offset / file.size) * 100);
         if (result.finalUrl) {
           forgetLocation(file);
-          setTusStatus("Upload complete: " + result.finalUrl, false);
+          setUploadCompleteStatus(result);
         }
       }
       forgetLocation(file);
-      if (tusProgress) tusProgress.value = 100;
-      if (!tusStatus || tusStatus.hidden) setTusStatus("Upload complete", false);
+      if (uploadProgress) uploadProgress.value = 100;
+      if (!uploadStatus || uploadStatus.hidden) setUploadStatus("Upload complete", false);
     } catch (error) {
-      setTusStatus(error.message || "Upload failed", true);
+      setUploadStatus(error.message || "Upload failed", true);
     } finally {
-      if (tusButton) tusButton.disabled = false;
+      if (uploadButton) uploadButton.disabled = false;
     }
   });
 })();

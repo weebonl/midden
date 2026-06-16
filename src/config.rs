@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -166,12 +166,10 @@ impl Default for FeatureConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LimitsConfig {
     pub max_upload_bytes: i64,
     pub max_paste_bytes: i64,
-    pub max_tus_upload_bytes: i64,
     pub anonymous_daily_bytes: Option<i64>,
     pub default_file_expiry: Option<String>,
     pub default_paste_expiry: Option<String>,
@@ -182,15 +180,53 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
-            max_upload_bytes: 200 * 1024 * 1024,
+            max_upload_bytes: 2 * 1024 * 1024 * 1024,
             max_paste_bytes: 1024 * 1024,
-            max_tus_upload_bytes: 2 * 1024 * 1024 * 1024,
             anonymous_daily_bytes: None,
             default_file_expiry: None,
             default_paste_expiry: None,
             anonymous_quota: QuotaConfig::default(),
             role_quotas: BTreeMap::new(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for LimitsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct RawLimitsConfig {
+            max_upload_bytes: Option<i64>,
+            max_paste_bytes: Option<i64>,
+            max_tus_upload_bytes: Option<i64>,
+            anonymous_daily_bytes: Option<i64>,
+            default_file_expiry: Option<String>,
+            default_paste_expiry: Option<String>,
+            anonymous_quota: QuotaConfig,
+            role_quotas: BTreeMap<String, QuotaConfig>,
+        }
+
+        let raw = RawLimitsConfig::deserialize(deserializer)?;
+        let default = LimitsConfig::default();
+        let max_upload_bytes = match (raw.max_upload_bytes, raw.max_tus_upload_bytes) {
+            (Some(upload), Some(legacy_tus)) => upload.max(legacy_tus),
+            (Some(upload), None) => upload,
+            (None, Some(legacy_tus)) => legacy_tus,
+            (None, None) => default.max_upload_bytes,
+        };
+
+        Ok(Self {
+            max_upload_bytes,
+            max_paste_bytes: raw.max_paste_bytes.unwrap_or(default.max_paste_bytes),
+            anonymous_daily_bytes: raw.anonymous_daily_bytes,
+            default_file_expiry: raw.default_file_expiry,
+            default_paste_expiry: raw.default_paste_expiry,
+            anonymous_quota: raw.anonymous_quota,
+            role_quotas: raw.role_quotas,
+        })
     }
 }
 

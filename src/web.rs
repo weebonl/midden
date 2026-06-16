@@ -54,7 +54,6 @@ pub fn router(state: AppState) -> Router {
     let csrf_state = state.clone();
     Router::new()
         .route("/", get(index).post(upload_form_file))
-        .route("/upload/resumable", get(resumable_upload_form))
         .route("/url-upload", get(url_upload_form).post(url_upload))
         .route("/static/{*path}", get(static_asset))
         .route("/browse", get(public_browse))
@@ -229,26 +228,6 @@ async fn index(State(state): State<AppState>, jar: CookieJar) -> AppResult<Html<
         "delete_policy": format!("{:?}", settings.policy.delete_policy),
     });
     render(&state, "index.html", &settings, user.as_ref(), page)
-}
-
-async fn resumable_upload_form(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Html<String>> {
-    let settings = state.settings().await?;
-    let user = current_user(&state, &jar).await?;
-    if !settings.features.files || !policy::can_upload_file(&settings, user.as_ref()) {
-        return Err(AppError::Forbidden);
-    }
-    render(
-        &state,
-        "resumable_upload.html",
-        &settings,
-        user.as_ref(),
-        serde_json::json!({
-            "max_upload": util::human_bytes(settings.limits.max_tus_upload_bytes),
-        }),
-    )
 }
 
 async fn upload_form_file(
@@ -2450,6 +2429,23 @@ mod tests {
         let client = reqwest::Client::new();
         let payload = hex_fixture(include_str!("../tests/fixtures/sample.gif.hex"));
 
+        let options = client
+            .request(reqwest::Method::OPTIONS, format!("{base}/tus"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(options.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            options.headers()["tus-max-size"].to_str().unwrap(),
+            state
+                .settings()
+                .await
+                .unwrap()
+                .limits
+                .max_upload_bytes
+                .to_string()
+        );
+
         let create = client
             .post(format!("{base}/tus"))
             .header("Tus-Resumable", "1.0.0")
@@ -2489,6 +2485,24 @@ mod tests {
             .unwrap();
         assert_eq!(complete.status(), StatusCode::NO_CONTENT);
         assert!(complete.headers().contains_key("location"));
+        assert!(complete.headers().contains_key("x-midden-raw-url"));
+        assert!(complete.headers().contains_key("x-midden-delete-url"));
+        assert!(complete.headers().contains_key("x-midden-delete-token"));
+
+        let mut limits = state.settings().await.unwrap().limits;
+        let original_max_upload_bytes = limits.max_upload_bytes;
+        limits.max_upload_bytes = 1;
+        state.db.set_json_setting("limits", &limits).await.unwrap();
+        let too_large = client
+            .post(format!("{base}/tus"))
+            .header("Tus-Resumable", "1.0.0")
+            .header("Upload-Length", "2")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        limits.max_upload_bytes = original_max_upload_bytes;
+        state.db.set_json_setting("limits", &limits).await.unwrap();
 
         let (owner, _) = user_with_api_token(
             &state,
@@ -2545,6 +2559,17 @@ mod tests {
 
         let mut policy = state.settings().await.unwrap().policy;
         policy.use_api = ActionRule::Disabled;
+        state.db.set_json_setting("policy", &policy).await.unwrap();
+        let api_disabled = client
+            .post(format!("{base}/tus"))
+            .header("Tus-Resumable", "1.0.0")
+            .header("Upload-Length", "1")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(api_disabled.status(), StatusCode::CREATED);
+
+        policy.upload_file = ActionRule::Disabled;
         state.db.set_json_setting("policy", &policy).await.unwrap();
         let denied = client
             .post(format!("{base}/tus"))

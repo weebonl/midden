@@ -14,7 +14,7 @@ pub(super) async fn tus_options(State(state): State<AppState>) -> AppResult<Resp
         .insert("Tus-Extension", HeaderValue::from_static("creation"));
     response.headers_mut().insert(
         "Tus-Max-Size",
-        HeaderValue::from_str(&settings.limits.max_tus_upload_bytes.to_string()).unwrap(),
+        HeaderValue::from_str(&settings.limits.max_upload_bytes.to_string()).unwrap(),
     );
     Ok(response)
 }
@@ -26,14 +26,13 @@ pub(super) async fn tus_create(
 ) -> AppResult<Response> {
     let settings = state.settings().await?;
     let user = current_user(&state, &jar).await?;
+    enforce_rate_limit(&state, &settings, "upload_file", &headers, user.as_ref()).await?;
     enforce_rate_limit(&state, &settings, "tus_create", &headers, user.as_ref()).await?;
-    if !policy::can_use_api(&settings, user.as_ref())
-        || !policy::can_upload_file(&settings, user.as_ref())
-    {
+    if !policy::can_upload_file(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
     let total = parse_i64_header(&headers, "Upload-Length")?;
-    if total > settings.limits.max_tus_upload_bytes {
+    if total > settings.limits.max_upload_bytes {
         return Err(AppError::PayloadTooLarge);
     }
     let upload_id = uuid::Uuid::new_v4().to_string();
@@ -77,9 +76,7 @@ pub(super) async fn tus_head(
 ) -> AppResult<Response> {
     let settings = state.settings().await?;
     let user = current_user(&state, &jar).await?;
-    if !policy::can_use_api(&settings, user.as_ref())
-        || !policy::can_upload_file(&settings, user.as_ref())
-    {
+    if !policy::can_upload_file(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
     let session = state
@@ -113,9 +110,7 @@ pub(super) async fn tus_patch(
     let settings = state.settings().await?;
     let user = current_user(&state, &jar).await?;
     enforce_rate_limit(&state, &settings, "tus_patch", &headers, user.as_ref()).await?;
-    if !policy::can_use_api(&settings, user.as_ref())
-        || !policy::can_upload_file(&settings, user.as_ref())
-    {
+    if !policy::can_upload_file(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
     let mut session = state
@@ -189,8 +184,23 @@ pub(super) async fn tus_patch(
             header::LOCATION,
             HeaderValue::from_str(&completed.url).unwrap_or_else(|_| HeaderValue::from_static("/")),
         );
+        insert_response_header(&mut response, "X-Midden-Raw-Url", &completed.raw_url);
+        insert_response_header(
+            &mut response,
+            "X-Midden-Delete-Url",
+            &format!("/delete/file/{}", completed.file.public_id),
+        );
+        if let Some(delete_token) = completed.delete_token.as_deref() {
+            insert_response_header(&mut response, "X-Midden-Delete-Token", delete_token);
+        }
     }
     Ok(response)
+}
+
+fn insert_response_header(response: &mut Response, name: &'static str, value: &str) {
+    if let Ok(header_value) = HeaderValue::from_str(value) {
+        response.headers_mut().insert(name, header_value);
+    }
 }
 
 fn authorize_tus_session_user(

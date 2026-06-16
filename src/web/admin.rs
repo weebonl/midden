@@ -301,7 +301,6 @@ pub(super) struct AdminSettingsForm {
     feature_paste_editing: Option<String>,
     max_upload_bytes: Option<String>,
     max_paste_bytes: Option<String>,
-    max_tus_upload_bytes: Option<String>,
     default_file_expiry: Option<String>,
     default_paste_expiry: Option<String>,
     anonymous_storage_bytes: Option<String>,
@@ -415,8 +414,6 @@ pub(super) async fn admin_update_settings(
         parse_required_i64("max_upload_bytes", form.max_upload_bytes.as_deref())?;
     limits.max_paste_bytes =
         parse_required_i64("max_paste_bytes", form.max_paste_bytes.as_deref())?;
-    limits.max_tus_upload_bytes =
-        parse_required_i64("max_tus_upload_bytes", form.max_tus_upload_bytes.as_deref())?;
     limits.default_file_expiry = nonempty(form.default_file_expiry.as_deref());
     limits.default_paste_expiry = nonempty(form.default_paste_expiry.as_deref());
     limits.anonymous_quota.storage_bytes =

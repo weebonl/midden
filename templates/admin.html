@@ -59,7 +59,6 @@
     <h3>Limits</h3>
     <p><label>Max upload bytes<br><input type="number" min="1" name="max_upload_bytes" value="{{ settings.limits.max_upload_bytes }}" required></label></p>
     <p><label>Max paste bytes<br><input type="number" min="1" name="max_paste_bytes" value="{{ settings.limits.max_paste_bytes }}" required></label></p>
-    <p><label>Max tus upload bytes<br><input type="number" min="1" name="max_tus_upload_bytes" value="{{ settings.limits.max_tus_upload_bytes }}" required></label></p>
     <p><label>Default file expiry<br><input name="default_file_expiry" value="{{ settings.limits.default_file_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
     <p><label>Default paste expiry<br><input name="default_paste_expiry" value="{{ settings.limits.default_paste_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
     <h4>Anonymous quota</h4>

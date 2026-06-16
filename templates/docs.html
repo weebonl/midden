@@ -3,10 +3,10 @@
 {% block content %}
   <h2>API</h2>
   <p><a href="/api/openapi.json">OpenAPI JSON</a></p>
-  <p>Multipart file upload:</p>
+  <p>Multipart file upload for simple clients:</p>
   <pre><code>curl -F file=@example.txt /api/v1/files</code></pre>
   <p>Add <code>-F expires=7d</code> to set an optional expiry. When public browse is enabled, add <code>-F visibility=public</code> to list the item.</p>
-  <p>Resumable uploads use tus 1.0 creation and patch endpoints at <code>/tus</code>. Include <code>filename</code>, <code>content_type</code>, <code>expires</code>, or <code>visibility</code> in <code>Upload-Metadata</code> when needed.</p>
+  <p>Browser uploads use tus 1.0 resumable uploads by default. Tus clients can create and patch sessions at <code>/tus</code>; include <code>filename</code>, <code>content_type</code>, <code>expires</code>, or <code>visibility</code> in <code>Upload-Metadata</code> when needed. Tus and multipart uploads share the same upload limit.</p>
   <p>Create a paste:</p>
   <pre><code>curl -H 'content-type: application/json' -d '{"content":"hello","expires":"7d","visibility":"unlisted"}' /api/v1/pastes</code></pre>
   <p>List your account items with an API token:</p>

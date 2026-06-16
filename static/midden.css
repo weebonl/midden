@@ -151,6 +151,14 @@ textarea {
   padding: 10px;
 }
 
+.notice p {
+  margin: 0 0 8px;
+}
+
+.notice p:last-child {
+  margin-bottom: 0;
+}
+
 .notice.error {
   border-color: oklch(0.5 0.17 30);
   color: oklch(0.42 0.16 30);
