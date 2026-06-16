@@ -1,0 +1,213 @@
+[server]
+bind = "127.0.0.1:8080"
+public_base_url = "http://127.0.0.1:8080"
+# template_dir = "/etc/midden/templates"
+# static_dir = "/etc/midden/static"
+behind_proxy = false
+
+[database]
+url = "sqlite://midden.db?mode=rwc"
+max_connections = 8
+
+[storage]
+backend = "local"
+
+[storage.local]
+path = "data/blobs"
+
+[storage.s3]
+bucket = ""
+region = "us-east-1"
+# endpoint = "http://127.0.0.1:9000"
+# access_key_id = "midden"
+# secret_access_key = "midden-secret"
+# prefix = "midden"
+allow_http = false
+virtual_hosted_style = false
+
+[features]
+files = true
+pastes = true
+accounts = true
+api = true
+reports = true
+upload_by_url = false
+preview_pages = false
+public_browse = false
+oidc_login = false
+paste_content_search = false
+paste_editing = false
+
+[limits]
+max_upload_bytes = 209715200
+max_paste_bytes = 1048576
+max_tus_upload_bytes = 2147483648
+# default_file_expiry = "30d"
+# default_paste_expiry = "7d"
+# Backward-compatible aggregate anonymous daily quota.
+# anonymous_daily_bytes = 1073741824
+
+[limits.anonymous_quota]
+# storage_bytes = 10737418240
+# daily_upload_bytes = 1073741824
+# monthly_upload_bytes = 10737418240
+# item_count = 1000
+
+[limits.role_quotas.user]
+# storage_bytes = 5368709120
+# daily_upload_bytes = 1073741824
+# monthly_upload_bytes = 10737418240
+# item_count = 500
+
+[branding]
+instance_name = "Midden"
+tagline = "Upload a file and get a link."
+accent_color = "oklch(0.44 0.12 235)"
+custom_css = ""
+dark_mode = "auto"
+opengraph_description = "A self-hosted file and paste sharing service."
+opengraph_files = true
+opengraph_pastes = true
+takedown_page_text = "This item is unavailable."
+
+[[branding.footer_links]]
+label = "FAQ"
+href = "/faq"
+
+[[branding.footer_links]]
+label = "API"
+href = "/api/docs"
+
+# [[branding.homepage_blocks]]
+# title = "Rules"
+# body = "Keep uploads legal and temporary."
+# href = "/rules"
+# link_label = "Read rules"
+
+[policy]
+signup = "disabled"
+upload_file = "anonymous"
+create_paste = "anonymous"
+use_api = "anonymous"
+view_item = "anonymous"
+delete_own_item = "authenticated"
+delete_policy = "delete_tokens"
+claim_anonymous_item = "authenticated"
+create_account = "disabled"
+
+[security]
+session_cookie_name = "midden_session"
+session_ttl_seconds = 2592000
+secure_cookies = false
+content_disposition = "inline"
+reject_mime_mismatch = false
+
+[delivery]
+public_cache_seconds = 3600
+static_cache_seconds = 31536000
+signed_internal_urls = false
+# internal_url_secret = "change-me-long-random-secret"
+internal_url_ttl_seconds = 300
+
+[processing]
+metadata_extraction = false
+metadata_stripping = false
+thumbnails = false
+
+[discovery]
+robots_index = false
+page_size = 50
+
+[jobs]
+enabled = true
+interval_seconds = 300
+metadata_limit = 25
+scanner_retry_limit = 10
+storage_verify_interval_seconds = 3600
+
+[security.url_upload]
+block_private_ips = true
+max_redirects = 3
+allowed_hosts = []
+blocked_hosts = []
+
+# Rate limits are disabled unless an action entry is present and enabled.
+# Common action names: upload_file, upload_by_url, create_paste, login, report,
+# api_upload_file, api_create_paste, api_delete_file, api_delete_paste,
+# api_create_token, api_create_report, api_list_files, api_list_pastes,
+# tus_create, tus_patch.
+#
+# [security.rate_limits.upload_file]
+# enabled = true
+# requests = 20
+# window_seconds = 3600
+#
+# [security.rate_limits.login]
+# enabled = true
+# requests = 10
+# window_seconds = 300
+#
+# [security.rate_limits.password_reset]
+# enabled = true
+# requests = 5
+# window_seconds = 3600
+#
+# [security.rate_limits.report]
+# enabled = true
+# requests = 10
+# window_seconds = 3600
+#
+# [security.rate_limits.tus_create]
+# enabled = true
+# requests = 20
+# window_seconds = 3600
+
+[smtp]
+enabled = false
+# host = "smtp.example.test"
+# port = 587
+# username = "midden"
+# password = "change-me"
+# from = "Midden <midden@example.test>"
+
+[oidc]
+enabled = false
+# issuer_url = "https://accounts.example.test"
+# client_id = "midden"
+# client_secret = "change-me"
+# redirect_url = "https://files.example.test/auth/oidc/callback"
+# allowed_domains = ["example.test"]
+# allowed_groups = ["midden-users"]
+# role_claim = "role"
+# groups_claim = "groups"
+# [oidc.role_mappings]
+# midden-moderators = "moderator"
+# midden-admins = "admin"
+
+[scanning]
+enabled = false
+blocked_hashes = []
+blocked_mime_types = []
+default_on_error = "allow"
+
+# Scanner decisions:
+# - allow: publish normally
+# - quarantine: store but do not serve publicly
+# - reject: reject the upload
+#
+# External command scanners receive a temporary file path through {path}.
+# Exit code 0 allows, 10 quarantines, 20 rejects. Other failures use default_on_error.
+#
+# [[scanning.adapters]]
+# kind = "command"
+# program = "/usr/local/bin/midden-scan"
+# args = ["{path}", "{filename}", "{content_type}", "{sha256}"]
+#
+# [[scanning.adapters]]
+# kind = "webhook"
+# url = "https://scanner.example.test/midden"
+# secret = "change-me"
+#
+# [[scanning.adapters]]
+# kind = "clam_av"
+# socket = "127.0.0.1:3310"

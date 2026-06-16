@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Delete | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Delete {{ page.kind }} {{ page.id }}</h2>
+  <form method="post" action="/delete/{{ page.kind }}/{{ page.id }}">
+    <p><label>Delete token, if required<br><input name="token"></label></p>
+    <p><button type="submit">Delete {{ page.kind }}</button></p>
+  </form>
+{% endblock %}

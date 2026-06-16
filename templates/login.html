@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Login | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Login</h2>
+  <form method="post" action="/auth/login">
+    <p><label>Email<br><input type="email" name="email" required></label></p>
+    <p><label>Password<br><input type="password" name="password" required></label></p>
+    <p><button type="submit">Login</button></p>
+  </form>
+  <p><a href="/auth/password-reset">Reset password</a></p>
+  {% if page.oidc_enabled %}
+    <p><a href="/auth/oidc/login">Login with OIDC</a></p>
+  {% endif %}
+{% endblock %}

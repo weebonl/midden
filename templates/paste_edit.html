@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Edit Paste | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Edit paste</h2>
+  <form method="post" action="/p/{{ page.paste.public_id }}/edit">
+    <p><label>Title<br><input name="title" maxlength="120" value="{{ page.paste.title or "" }}"></label></p>
+    <p><label>Syntax<br><input name="syntax" value="{{ page.paste.syntax or "" }}" placeholder="rust, text, js"></label></p>
+    <p><label>Text<br><textarea name="content" required rows="18">{{ page.paste.content }}</textarea></label></p>
+    <p><button type="submit">Save paste</button></p>
+  </form>
+{% endblock %}

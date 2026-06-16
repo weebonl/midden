@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Register | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Register</h2>
+  <form method="post" action="/register">
+    <p><label>Email<br><input type="email" name="email" required></label></p>
+    <p><label>Username<br><input name="username" required></label></p>
+    <p><label>Password<br><input type="password" name="password" required></label></p>
+    {% if page.invite_required %}
+      <p><label>Invite token<br><input name="invite_token" required></label></p>
+    {% endif %}
+    <p><button type="submit">Create account</button></p>
+  </form>
+{% endblock %}

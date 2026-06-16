@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}API | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>API</h2>
+  <p><a href="/api/openapi.json">OpenAPI JSON</a></p>
+  <p>Multipart file upload:</p>
+  <pre><code>curl -F file=@example.txt /api/v1/files</code></pre>
+  <p>Add <code>-F expires=7d</code> to set an optional expiry. When public browse is enabled, add <code>-F visibility=public</code> to list the item.</p>
+  <p>Resumable uploads use tus 1.0 creation and patch endpoints at <code>/tus</code>. Include <code>filename</code>, <code>content_type</code>, <code>expires</code>, or <code>visibility</code> in <code>Upload-Metadata</code> when needed.</p>
+  <p>Create a paste:</p>
+  <pre><code>curl -H 'content-type: application/json' -d '{"content":"hello","expires":"7d","visibility":"unlisted"}' /api/v1/pastes</code></pre>
+  <p>List your account items with an API token:</p>
+  <pre><code>curl -H 'authorization: Bearer TOKEN' /api/v1/me/files
+curl -H 'authorization: Bearer TOKEN' /api/v1/me/pastes?q=rust</code></pre>
+  <p>Manage API tokens:</p>
+  <pre><code>curl -H 'authorization: Bearer TOKEN' /api/v1/tokens
+curl -X DELETE -H 'authorization: Bearer TOKEN' /api/v1/tokens/TOKEN_ID</code></pre>
+  <p>Claim an anonymous item:</p>
+  <pre><code>curl -H 'authorization: Bearer TOKEN' -H 'content-type: application/json' \
+  -d '{"delete_token":"TOKEN"}' /api/v1/claim/file/abc123</code></pre>
+  <p>Report an item:</p>
+  <pre><code>curl -H 'content-type: application/json' -d '{"kind":"file","id":"abc123","reason":"abuse"}' /api/v1/reports</code></pre>
+  <p>Moderator API examples:</p>
+  <pre><code>curl -H 'authorization: Bearer TOKEN' /api/v1/admin/reports?state=open
+curl -X PATCH -H 'authorization: Bearer TOKEN' -H 'content-type: application/json' \
+  -d '{"state":"takedown","visibility":"unlisted","note":"confirmed"}' /api/v1/admin/items/file/abc123</code></pre>
+  <p>File responses include <code>visibility</code>, optional extracted <code>metadata</code>, optional <code>thumbnail_url</code>, and optional signed <code>internal_url</code> when configured.</p>
+  <p>Authenticated requests use <code>Authorization: Bearer TOKEN</code>. Tokens are scoped, and admins can disable the API or tighten the <code>use_api</code> action rule in settings. Common scopes include <code>files:read</code>, <code>files:write</code>, <code>files:delete</code>, <code>pastes:read</code>, <code>pastes:write</code>, <code>pastes:delete</code>, <code>reports:write</code>, <code>items:claim</code>, <code>tokens:read</code>, <code>tokens:write</code>, <code>admin:reports</code>, <code>admin:items</code>, and <code>admin:search</code>.</p>
+{% endblock %}

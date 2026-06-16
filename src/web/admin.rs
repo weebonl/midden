@@ -1,0 +1,1269 @@
+use super::*;
+
+pub(super) async fn admin(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Html<String>> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let scanner_defaults = scanner_form_defaults(&settings);
+    render(
+        &state,
+        "admin.html",
+        &settings,
+        user.as_ref(),
+        serde_json::json!({
+            "blocked_hashes": settings.scanning.blocked_hashes.join("\n"),
+            "blocked_mime_types": settings.scanning.blocked_mime_types.join("\n"),
+            "homepage_blocks": homepage_blocks_for_form(&settings.branding.homepage_blocks),
+            "scanner": scanner_defaults,
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminSearchQuery {
+    pub(super) q: Option<String>,
+    pub(super) paste_content: Option<bool>,
+}
+
+pub(super) async fn admin_search(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<AdminSearchQuery>,
+) -> AppResult<Html<String>> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_moderate(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let q = query.q.unwrap_or_default();
+    let (files, pastes) = if q.trim().is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            state.db.admin_search_files(&q).await?,
+            state
+                .db
+                .admin_search_pastes(&q, query.paste_content.unwrap_or(false))
+                .await?,
+        )
+    };
+    render(
+        &state,
+        "admin_search.html",
+        &settings,
+        user.as_ref(),
+        serde_json::json!({
+            "q": q,
+            "paste_content": query.paste_content.unwrap_or(false),
+            "files": files,
+            "pastes": pastes,
+        }),
+    )
+}
+
+pub(super) async fn admin_users(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Html<String>> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let users = state.db.list_users().await?;
+    let invites = state.db.list_invite_tokens().await?;
+    render(
+        &state,
+        "admin_users.html",
+        &settings,
+        user.as_ref(),
+        serde_json::json!({ "users": users, "invites": invites, "invite_token": null }),
+    )
+}
+
+fn role_requires_owner_actor(role: Role, user: Option<&User>) -> bool {
+    role == Role::Owner && user.is_none_or(|user| user.role != Role::Owner)
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminCreateUserForm {
+    email: String,
+    username: String,
+    password: String,
+    role: String,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_create_user(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::Form(form): axum::Form<AdminCreateUserForm>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    let role = Role::parse_form(&form.role)
+        .map_err(|err| AppError::BadRequest(format!("invalid role: {err}")))?;
+    if role_requires_owner_actor(role, user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let password_hash = util::hash_password(&form.password)?;
+    let created = state
+        .db
+        .create_user(&form.email, &form.username, Some(&password_hash), role)
+        .await?;
+    state
+        .db
+        .audit(
+            user.as_ref().map(|user| user.id.as_str()),
+            "user.created",
+            &created.id,
+            "admin UI",
+        )
+        .await?;
+    Ok(Redirect::to("/admin/users"))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminRoleForm {
+    role: String,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_set_user_role(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<AdminRoleForm>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    let role = Role::parse_form(&form.role)
+        .map_err(|err| AppError::BadRequest(format!("invalid role: {err}")))?;
+    if role_requires_owner_actor(role, user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    state.db.set_user_role(&id, role).await?;
+    state
+        .db
+        .audit(
+            user.as_ref().map(|user| user.id.as_str()),
+            "user.role_updated",
+            &id,
+            role.as_str(),
+        )
+        .await?;
+    Ok(Redirect::to("/admin/users"))
+}
+
+pub(super) async fn admin_disable_user(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<CsrfForm>,
+) -> AppResult<Redirect> {
+    set_user_disabled_from_admin(state, jar, id, true, form.csrf_token).await
+}
+
+pub(super) async fn admin_enable_user(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<CsrfForm>,
+) -> AppResult<Redirect> {
+    set_user_disabled_from_admin(state, jar, id, false, form.csrf_token).await
+}
+
+async fn set_user_disabled_from_admin(
+    state: AppState,
+    jar: CookieJar,
+    id: String,
+    disabled: bool,
+    csrf_token: Option<String>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, csrf_token.as_deref())?;
+    if user.as_ref().is_some_and(|user| user.id == id) && disabled {
+        return Err(AppError::BadRequest(
+            "admins cannot disable themselves".to_string(),
+        ));
+    }
+    state.db.set_user_disabled(&id, disabled).await?;
+    state
+        .db
+        .audit(
+            user.as_ref().map(|user| user.id.as_str()),
+            if disabled {
+                "user.disabled"
+            } else {
+                "user.enabled"
+            },
+            &id,
+            "admin UI",
+        )
+        .await?;
+    Ok(Redirect::to("/admin/users"))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminInviteForm {
+    role: String,
+    expires_hours: Option<i64>,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_create_invite(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::Form(form): axum::Form<AdminInviteForm>,
+) -> AppResult<Html<String>> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    let role = Role::parse_form(&form.role)
+        .map_err(|err| AppError::BadRequest(format!("invalid role: {err}")))?;
+    if role_requires_owner_actor(role, user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let token = util::secret_token();
+    let expires_at = form
+        .expires_hours
+        .filter(|hours| *hours > 0)
+        .map(|hours| util::now_ts() + hours * 60 * 60);
+    state
+        .db
+        .create_invite_token(
+            &util::hash_token(&token),
+            user.as_ref()
+                .map(|user| user.id.as_str())
+                .unwrap_or_default(),
+            role,
+            expires_at,
+        )
+        .await?;
+    let users = state.db.list_users().await?;
+    let invites = state.db.list_invite_tokens().await?;
+    render(
+        &state,
+        "admin_users.html",
+        &settings,
+        user.as_ref(),
+        serde_json::json!({ "users": users, "invites": invites, "invite_token": token }),
+    )
+}
+
+pub(super) async fn admin_revoke_invite(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<CsrfForm>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    state
+        .db
+        .revoke_invite_token(&id, user.as_ref().map(|user| user.id.as_str()))
+        .await?;
+    Ok(Redirect::to("/admin/users"))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminSettingsForm {
+    feature_files: Option<String>,
+    feature_pastes: Option<String>,
+    feature_accounts: Option<String>,
+    feature_api: Option<String>,
+    feature_reports: Option<String>,
+    feature_upload_by_url: Option<String>,
+    feature_preview_pages: Option<String>,
+    feature_public_browse: Option<String>,
+    feature_oidc_login: Option<String>,
+    feature_paste_content_search: Option<String>,
+    feature_paste_editing: Option<String>,
+    max_upload_bytes: Option<String>,
+    max_paste_bytes: Option<String>,
+    max_tus_upload_bytes: Option<String>,
+    default_file_expiry: Option<String>,
+    default_paste_expiry: Option<String>,
+    anonymous_storage_bytes: Option<String>,
+    anonymous_daily_upload_bytes: Option<String>,
+    anonymous_monthly_upload_bytes: Option<String>,
+    anonymous_item_count: Option<String>,
+    user_storage_bytes: Option<String>,
+    user_daily_upload_bytes: Option<String>,
+    user_monthly_upload_bytes: Option<String>,
+    user_item_count: Option<String>,
+    signup: String,
+    policy_upload_file: String,
+    policy_create_paste: String,
+    policy_use_api: String,
+    policy_view_item: String,
+    policy_delete_own_item: String,
+    policy_claim_anonymous_item: String,
+    policy_create_account: String,
+    delete_policy: String,
+    instance_name: String,
+    tagline: String,
+    logo_url: Option<String>,
+    favicon_url: Option<String>,
+    accent_color: String,
+    dark_mode: String,
+    opengraph_description: String,
+    opengraph_files: Option<String>,
+    opengraph_pastes: Option<String>,
+    takedown_page_text: String,
+    homepage_blocks: Option<String>,
+    abuse_email: Option<String>,
+    contact_url: Option<String>,
+    secure_cookies: Option<String>,
+    content_disposition: String,
+    reject_mime_mismatch: Option<String>,
+    delivery_public_cache_seconds: Option<String>,
+    delivery_static_cache_seconds: Option<String>,
+    delivery_signed_internal_urls: Option<String>,
+    delivery_internal_url_secret: Option<String>,
+    delivery_internal_url_ttl_seconds: Option<String>,
+    processing_metadata_extraction: Option<String>,
+    processing_metadata_stripping: Option<String>,
+    processing_thumbnails: Option<String>,
+    discovery_robots_index: Option<String>,
+    discovery_page_size: Option<String>,
+    jobs_enabled: Option<String>,
+    jobs_interval_seconds: Option<String>,
+    jobs_metadata_limit: Option<String>,
+    jobs_scanner_retry_limit: Option<String>,
+    jobs_storage_verify_interval_seconds: Option<String>,
+    url_block_private_ips: Option<String>,
+    url_max_redirects: Option<String>,
+    url_allowed_hosts: Option<String>,
+    url_blocked_hosts: Option<String>,
+    rl_upload_file_enabled: Option<String>,
+    rl_upload_file_requests: Option<String>,
+    rl_upload_file_window: Option<String>,
+    rl_upload_by_url_enabled: Option<String>,
+    rl_upload_by_url_requests: Option<String>,
+    rl_upload_by_url_window: Option<String>,
+    rl_login_enabled: Option<String>,
+    rl_login_requests: Option<String>,
+    rl_login_window: Option<String>,
+    rl_password_reset_enabled: Option<String>,
+    rl_password_reset_requests: Option<String>,
+    rl_password_reset_window: Option<String>,
+    rl_report_enabled: Option<String>,
+    rl_report_requests: Option<String>,
+    rl_report_window: Option<String>,
+    rl_tus_create_enabled: Option<String>,
+    rl_tus_create_requests: Option<String>,
+    rl_tus_create_window: Option<String>,
+    scanning_enabled: Option<String>,
+    blocked_hashes: Option<String>,
+    blocked_mime_types: Option<String>,
+    default_on_error: String,
+    command_scanner_program: Option<String>,
+    command_scanner_args: Option<String>,
+    webhook_scanner_url: Option<String>,
+    webhook_scanner_secret: Option<String>,
+    clamav_socket: Option<String>,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_update_settings(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::Form(form): axum::Form<AdminSettingsForm>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_admin(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    let settings = state.settings().await?;
+    let features = FeatureConfig {
+        files: form.feature_files.is_some(),
+        pastes: form.feature_pastes.is_some(),
+        accounts: form.feature_accounts.is_some(),
+        api: form.feature_api.is_some(),
+        reports: form.feature_reports.is_some(),
+        upload_by_url: form.feature_upload_by_url.is_some(),
+        preview_pages: form.feature_preview_pages.is_some(),
+        public_browse: form.feature_public_browse.is_some(),
+        oidc_login: form.feature_oidc_login.is_some(),
+        paste_content_search: form.feature_paste_content_search.is_some(),
+        paste_editing: form.feature_paste_editing.is_some(),
+    };
+    let mut limits = settings.limits.clone();
+    limits.max_upload_bytes =
+        parse_required_i64("max_upload_bytes", form.max_upload_bytes.as_deref())?;
+    limits.max_paste_bytes =
+        parse_required_i64("max_paste_bytes", form.max_paste_bytes.as_deref())?;
+    limits.max_tus_upload_bytes =
+        parse_required_i64("max_tus_upload_bytes", form.max_tus_upload_bytes.as_deref())?;
+    limits.default_file_expiry = nonempty(form.default_file_expiry.as_deref());
+    limits.default_paste_expiry = nonempty(form.default_paste_expiry.as_deref());
+    limits.anonymous_quota.storage_bytes =
+        parse_optional_i64(form.anonymous_storage_bytes.as_deref())?;
+    limits.anonymous_quota.daily_upload_bytes =
+        parse_optional_i64(form.anonymous_daily_upload_bytes.as_deref())?;
+    limits.anonymous_quota.monthly_upload_bytes =
+        parse_optional_i64(form.anonymous_monthly_upload_bytes.as_deref())?;
+    limits.anonymous_quota.item_count = parse_optional_i64(form.anonymous_item_count.as_deref())?;
+    let mut user_quota = settings
+        .limits
+        .role_quotas
+        .get("user")
+        .cloned()
+        .unwrap_or_default();
+    user_quota.storage_bytes = parse_optional_i64(form.user_storage_bytes.as_deref())?;
+    user_quota.daily_upload_bytes = parse_optional_i64(form.user_daily_upload_bytes.as_deref())?;
+    user_quota.monthly_upload_bytes =
+        parse_optional_i64(form.user_monthly_upload_bytes.as_deref())?;
+    user_quota.item_count = parse_optional_i64(form.user_item_count.as_deref())?;
+    if quota_is_empty(&user_quota) {
+        limits.role_quotas.remove("user");
+    } else {
+        limits.role_quotas.insert("user".to_string(), user_quota);
+    }
+
+    let policy = PolicyConfig {
+        signup: parse_signup_mode(&form.signup)?,
+        upload_file: parse_action_rule(&form.policy_upload_file)?,
+        create_paste: parse_action_rule(&form.policy_create_paste)?,
+        use_api: parse_action_rule(&form.policy_use_api)?,
+        view_item: parse_action_rule(&form.policy_view_item)?,
+        delete_own_item: parse_action_rule(&form.policy_delete_own_item)?,
+        delete_policy: parse_delete_policy(&form.delete_policy)?,
+        claim_anonymous_item: parse_action_rule(&form.policy_claim_anonymous_item)?,
+        create_account: parse_action_rule(&form.policy_create_account)?,
+    };
+
+    let mut security = settings.security.clone();
+    security.secure_cookies = form.secure_cookies.is_some();
+    security.content_disposition = match form.content_disposition.as_str() {
+        "attachment" => ContentDispositionMode::Attachment,
+        "inline" => ContentDispositionMode::Inline,
+        _ => {
+            return Err(AppError::BadRequest(
+                "invalid content disposition".to_string(),
+            ));
+        }
+    };
+    security.reject_mime_mismatch = form.reject_mime_mismatch.is_some();
+    security.url_upload.block_private_ips = form.url_block_private_ips.is_some();
+    security.url_upload.max_redirects =
+        parse_optional_usize(form.url_max_redirects.as_deref())?.unwrap_or(3);
+    security.url_upload.allowed_hosts = lines(form.url_allowed_hosts.as_deref());
+    security.url_upload.blocked_hosts = lines(form.url_blocked_hosts.as_deref());
+    apply_rate_limit_form(
+        &mut security.rate_limits,
+        "upload_file",
+        form.rl_upload_file_enabled.is_some(),
+        form.rl_upload_file_requests.as_deref(),
+        form.rl_upload_file_window.as_deref(),
+    )?;
+    apply_rate_limit_form(
+        &mut security.rate_limits,
+        "upload_by_url",
+        form.rl_upload_by_url_enabled.is_some(),
+        form.rl_upload_by_url_requests.as_deref(),
+        form.rl_upload_by_url_window.as_deref(),
+    )?;
+    apply_rate_limit_form(
+        &mut security.rate_limits,
+        "login",
+        form.rl_login_enabled.is_some(),
+        form.rl_login_requests.as_deref(),
+        form.rl_login_window.as_deref(),
+    )?;
+    apply_rate_limit_form(
+        &mut security.rate_limits,
+        "password_reset",
+        form.rl_password_reset_enabled.is_some(),
+        form.rl_password_reset_requests.as_deref(),
+        form.rl_password_reset_window.as_deref(),
+    )?;
+    apply_rate_limit_form(
+        &mut security.rate_limits,
+        "report",
+        form.rl_report_enabled.is_some(),
+        form.rl_report_requests.as_deref(),
+        form.rl_report_window.as_deref(),
+    )?;
+    apply_rate_limit_form(
+        &mut security.rate_limits,
+        "tus_create",
+        form.rl_tus_create_enabled.is_some(),
+        form.rl_tus_create_requests.as_deref(),
+        form.rl_tus_create_window.as_deref(),
+    )?;
+
+    let mut delivery = settings.delivery.clone();
+    delivery.public_cache_seconds =
+        parse_optional_u64(form.delivery_public_cache_seconds.as_deref())?
+            .unwrap_or(delivery.public_cache_seconds);
+    delivery.static_cache_seconds =
+        parse_optional_u64(form.delivery_static_cache_seconds.as_deref())?
+            .unwrap_or(delivery.static_cache_seconds);
+    delivery.signed_internal_urls = form.delivery_signed_internal_urls.is_some();
+    delivery.internal_url_secret = nonempty(form.delivery_internal_url_secret.as_deref());
+    delivery.internal_url_ttl_seconds =
+        parse_optional_i64(form.delivery_internal_url_ttl_seconds.as_deref())?
+            .unwrap_or(delivery.internal_url_ttl_seconds)
+            .max(1);
+    if delivery.signed_internal_urls && delivery.internal_url_secret.is_none() {
+        return Err(AppError::BadRequest(
+            "signed internal URLs require a secret".to_string(),
+        ));
+    }
+
+    let mut processing = settings.processing.clone();
+    processing.metadata_extraction = form.processing_metadata_extraction.is_some();
+    processing.metadata_stripping = form.processing_metadata_stripping.is_some();
+    processing.thumbnails = form.processing_thumbnails.is_some();
+
+    let mut discovery = settings.discovery.clone();
+    discovery.robots_index = form.discovery_robots_index.is_some();
+    discovery.page_size = parse_optional_u32(form.discovery_page_size.as_deref())?
+        .unwrap_or(discovery.page_size)
+        .clamp(1, 1000);
+
+    let mut jobs = settings.jobs.clone();
+    jobs.enabled = form.jobs_enabled.is_some();
+    jobs.interval_seconds = parse_optional_u64(form.jobs_interval_seconds.as_deref())?
+        .unwrap_or(jobs.interval_seconds)
+        .max(30);
+    jobs.metadata_limit = parse_optional_u32(form.jobs_metadata_limit.as_deref())?
+        .unwrap_or(jobs.metadata_limit)
+        .max(1);
+    jobs.scanner_retry_limit = parse_optional_u32(form.jobs_scanner_retry_limit.as_deref())?
+        .unwrap_or(jobs.scanner_retry_limit)
+        .max(1);
+    jobs.storage_verify_interval_seconds =
+        parse_optional_u64(form.jobs_storage_verify_interval_seconds.as_deref())?
+            .unwrap_or(jobs.storage_verify_interval_seconds)
+            .max(60);
+
+    let mut branding = settings.branding.clone();
+    branding.instance_name = form.instance_name.trim().to_string();
+    branding.tagline = form.tagline.trim().to_string();
+    branding.logo_url = nonempty(form.logo_url.as_deref());
+    branding.favicon_url = nonempty(form.favicon_url.as_deref());
+    branding.accent_color = form.accent_color.trim().to_string();
+    branding.dark_mode = match form.dark_mode.as_str() {
+        "auto" | "light" | "dark" => form.dark_mode.clone(),
+        _ => {
+            return Err(AppError::BadRequest(
+                "invalid dark mode behavior".to_string(),
+            ));
+        }
+    };
+    branding.opengraph_description = form.opengraph_description.trim().to_string();
+    branding.opengraph_files = form.opengraph_files.is_some();
+    branding.opengraph_pastes = form.opengraph_pastes.is_some();
+    branding.takedown_page_text = form.takedown_page_text.trim().to_string();
+    branding.homepage_blocks = parse_homepage_blocks(form.homepage_blocks.as_deref())?;
+    branding.abuse_email = nonempty(form.abuse_email.as_deref());
+    branding.contact_url = nonempty(form.contact_url.as_deref());
+
+    let mut scanning = settings.scanning.clone();
+    scanning.enabled = form.scanning_enabled.is_some();
+    scanning.blocked_hashes = lines(form.blocked_hashes.as_deref());
+    scanning.blocked_mime_types = lines(form.blocked_mime_types.as_deref());
+    scanning.default_on_error = parse_scan_decision(&form.default_on_error)?;
+    scanning.adapters = scanner_adapters_from_form(&form);
+    state.db.set_json_setting("features", &features).await?;
+    state.db.set_json_setting("limits", &limits).await?;
+    state.db.set_json_setting("policy", &policy).await?;
+    state.db.set_json_setting("security", &security).await?;
+    state.db.set_json_setting("delivery", &delivery).await?;
+    state.db.set_json_setting("branding", &branding).await?;
+    state.db.set_json_setting("scanning", &scanning).await?;
+    state.db.set_json_setting("processing", &processing).await?;
+    state.db.set_json_setting("discovery", &discovery).await?;
+    state.db.set_json_setting("jobs", &jobs).await?;
+    state
+        .db
+        .audit(
+            user.as_ref().map(|u| u.id.as_str()),
+            "settings.updated",
+            "settings",
+            "admin UI",
+        )
+        .await?;
+    Ok(Redirect::to("/admin"))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminReportsQuery {
+    pub(super) state: Option<String>,
+    pub(super) kind: Option<String>,
+    pub(super) reason: Option<String>,
+    pub(super) days: Option<i64>,
+}
+
+pub(super) async fn admin_reports(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<AdminReportsQuery>,
+) -> AppResult<Html<String>> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_moderate(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let state_filter = query.state.as_deref().filter(|value| !value.is_empty());
+    let kind_filter = query.kind.as_deref().filter(|value| !value.is_empty());
+    let reason_filter = query
+        .reason
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let created_after = query
+        .days
+        .filter(|days| *days > 0)
+        .map(|days| util::now_ts() - days * 60 * 60 * 24);
+    let reports = state
+        .db
+        .list_reports_filtered(state_filter, kind_filter, reason_filter, created_after)
+        .await?;
+    render(
+        &state,
+        "reports.html",
+        &settings,
+        user.as_ref(),
+        serde_json::json!({
+            "reports": reports,
+            "filters": {
+                "state": query.state.unwrap_or_default(),
+                "kind": query.kind.unwrap_or_default(),
+                "reason": query.reason.unwrap_or_default(),
+                "days": query.days,
+            },
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminReportActionForm {
+    pub(super) action: String,
+    pub(super) note: Option<String>,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_update_report(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    axum::Form(form): axum::Form<AdminReportActionForm>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_moderate(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    let report = state.db.report_by_id(&id).await?;
+    apply_report_action(
+        &state,
+        &report,
+        &form.action,
+        user.as_ref(),
+        form.note.as_deref(),
+    )
+    .await?;
+    Ok(Redirect::to("/admin/reports"))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminBulkReportActionForm {
+    action: String,
+    note: Option<String>,
+    #[serde(default)]
+    report_ids: Vec<String>,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_bulk_update_reports(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    axum::Form(form): axum::Form<AdminBulkReportActionForm>,
+) -> AppResult<Redirect> {
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_moderate(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    if form.report_ids.is_empty() {
+        return Err(AppError::BadRequest(
+            "select at least one report".to_string(),
+        ));
+    }
+    for report_id in &form.report_ids {
+        let report = state.db.report_by_id(report_id).await?;
+        apply_report_action(
+            &state,
+            &report,
+            &form.action,
+            user.as_ref(),
+            form.note.as_deref(),
+        )
+        .await?;
+    }
+    Ok(Redirect::to("/admin/reports"))
+}
+
+pub(super) async fn apply_report_action(
+    state: &AppState,
+    report: &crate::db::Report,
+    action: &str,
+    user: Option<&User>,
+    note: Option<&str>,
+) -> AppResult<()> {
+    let actor_id = user.map(|user| user.id.as_str());
+    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
+        state
+            .db
+            .add_moderation_note(
+                &report.item_kind,
+                &report.item_public_id,
+                Some(&report.id),
+                actor_id,
+                note,
+            )
+            .await?;
+    }
+    match action {
+        "resolve" => {
+            state
+                .db
+                .update_report_state(&report.id, "resolved", actor_id, "moderator resolved")
+                .await?;
+        }
+        "dismiss" => {
+            state
+                .db
+                .update_report_state(&report.id, "dismissed", actor_id, "moderator dismissed")
+                .await?;
+        }
+        "quarantine" | "takedown" | "legal_hold" => {
+            moderate_reported_item(state, report, action, actor_id).await?;
+            state
+                .db
+                .update_report_state(
+                    &report.id,
+                    "resolved",
+                    actor_id,
+                    &format!("moderator set item state {action}"),
+                )
+                .await?;
+        }
+        _ => return Err(AppError::BadRequest("unknown report action".to_string())),
+    }
+    Ok(())
+}
+
+async fn moderate_reported_item(
+    state: &AppState,
+    report: &crate::db::Report,
+    item_state: &str,
+    actor_user_id: Option<&str>,
+) -> AppResult<()> {
+    let detail = format!("report {}", report.id);
+    let updated = match report.item_kind.as_str() {
+        "file" => {
+            state
+                .db
+                .update_file_state_by_public_id(
+                    &report.item_public_id,
+                    item_state,
+                    actor_user_id,
+                    &detail,
+                )
+                .await?
+        }
+        "paste" => {
+            state
+                .db
+                .update_paste_state_by_public_id(
+                    &report.item_public_id,
+                    item_state,
+                    actor_user_id,
+                    &detail,
+                )
+                .await?
+        }
+        _ => return Err(AppError::BadRequest("unknown report item kind".to_string())),
+    };
+    if updated {
+        Ok(())
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+pub(super) async fn admin_item(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((kind, id)): Path<(String, String)>,
+) -> AppResult<Html<String>> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_moderate(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    let item = moderation_item_json(&state, &kind, &id).await?;
+    let reports = state.db.reports_for_item(&kind, &id).await?;
+    let scans = state.db.scan_results_for_item(&kind, &id).await?;
+    let audits = state.db.audit_events_for_target(&id).await?;
+    let notes = state.db.moderation_notes_for_item(&kind, &id).await?;
+    render(
+        &state,
+        "admin_item.html",
+        &settings,
+        user.as_ref(),
+        serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "item": item,
+            "reports": reports,
+            "scans": scans,
+            "audits": audits,
+            "notes": notes,
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminItemActionForm {
+    action: String,
+    state: Option<String>,
+    visibility: Option<String>,
+    note: Option<String>,
+    csrf_token: Option<String>,
+}
+
+pub(super) async fn admin_update_item(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((kind, id)): Path<(String, String)>,
+    axum::Form(form): axum::Form<AdminItemActionForm>,
+) -> AppResult<Redirect> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    if !policy::can_moderate(user.as_ref()) {
+        return Err(AppError::Forbidden);
+    }
+    validate_csrf(&jar, form.csrf_token.as_deref())?;
+    let actor_id = user.as_ref().map(|user| user.id.as_str());
+    match form.action.as_str() {
+        "set_state" => {
+            let state_value = form
+                .state
+                .as_deref()
+                .filter(|state| {
+                    matches!(
+                        *state,
+                        "active" | "quarantined" | "takedown" | "legal_hold" | "deleted"
+                    )
+                })
+                .ok_or_else(|| AppError::BadRequest("invalid item state".to_string()))?;
+            update_item_state(&state, &kind, &id, state_value, actor_id, "item moderation").await?;
+        }
+        "set_visibility" => {
+            let visibility = requested_visibility(&settings, form.visibility.as_deref())?;
+            update_item_visibility(&state, &kind, &id, visibility, actor_id, "item moderation")
+                .await?;
+        }
+        "add_note" => {
+            let note = form
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|note| !note.is_empty())
+                .ok_or_else(|| AppError::BadRequest("note is required".to_string()))?;
+            state
+                .db
+                .add_moderation_note(&kind, &id, None, actor_id, note)
+                .await?;
+        }
+        "block_hash" => {
+            if kind != "file" {
+                return Err(AppError::BadRequest(
+                    "blocked hashes can only be created from files".to_string(),
+                ));
+            }
+            let file = state.db.file_by_public_id(&id).await?;
+            let mut scanning = settings.scanning.clone();
+            if !scanning
+                .blocked_hashes
+                .iter()
+                .any(|hash| hash.eq_ignore_ascii_case(&file.blob_hash))
+            {
+                scanning.blocked_hashes.push(file.blob_hash.clone());
+                state.db.set_json_setting("scanning", &scanning).await?;
+                state
+                    .db
+                    .audit(actor_id, "scanner.blocked_hash_added", &id, &file.blob_hash)
+                    .await?;
+            }
+        }
+        _ => return Err(AppError::BadRequest("unknown item action".to_string())),
+    }
+    Ok(Redirect::to(&format!("/admin/items/{kind}/{id}")))
+}
+
+pub(super) async fn update_item_state(
+    state: &AppState,
+    kind: &str,
+    id: &str,
+    item_state: &str,
+    actor_id: Option<&str>,
+    detail: &str,
+) -> AppResult<()> {
+    let updated = match kind {
+        "file" => {
+            state
+                .db
+                .update_file_state_by_public_id(id, item_state, actor_id, detail)
+                .await?
+        }
+        "paste" => {
+            state
+                .db
+                .update_paste_state_by_public_id(id, item_state, actor_id, detail)
+                .await?
+        }
+        _ => return Err(AppError::NotFound),
+    };
+    if updated {
+        Ok(())
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+pub(super) async fn update_item_visibility(
+    state: &AppState,
+    kind: &str,
+    id: &str,
+    visibility: &str,
+    actor_id: Option<&str>,
+    detail: &str,
+) -> AppResult<()> {
+    match kind {
+        "file" => {
+            if !state.db.set_file_visibility(id, visibility).await? {
+                return Err(AppError::NotFound);
+            }
+            state
+                .db
+                .audit(actor_id, "file.visibility_updated", id, detail)
+                .await?;
+            Ok(())
+        }
+        "paste" => {
+            if !state.db.set_paste_visibility(id, visibility).await? {
+                return Err(AppError::NotFound);
+            }
+            state
+                .db
+                .audit(actor_id, "paste.visibility_updated", id, detail)
+                .await?;
+            Ok(())
+        }
+        _ => Err(AppError::NotFound),
+    }
+}
+
+async fn moderation_item_json(
+    state: &AppState,
+    kind: &str,
+    id: &str,
+) -> AppResult<serde_json::Value> {
+    match kind {
+        "file" => {
+            let file = state
+                .db
+                .file_by_public_id(id)
+                .await
+                .map_err(|_| AppError::NotFound)?;
+            Ok(serde_json::json!({
+                "public_id": file.public_id,
+                "filename": file.original_filename,
+                "content_type": file.content_type,
+                "size_bytes": file.size_bytes,
+                "image_width": file.image_width,
+                "image_height": file.image_height,
+                "blob_hash": file.blob_hash,
+                "visibility": file.visibility,
+                "metadata": file.metadata_json.as_deref().and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+                "thumbnail_hash": file.thumbnail_hash,
+                "state": file.state,
+                "created_at": file.created_at,
+                "expires_at": file.expires_at,
+            }))
+        }
+        "paste" => {
+            let paste = state
+                .db
+                .paste_by_public_id_any(id)
+                .await
+                .map_err(|_| AppError::NotFound)?;
+            Ok(serde_json::json!({
+                "public_id": paste.public_id,
+                "title": paste.title,
+                "syntax": paste.syntax,
+                "size_bytes": paste.content.len(),
+                "visibility": paste.visibility,
+                "state": paste.state,
+                "created_at": paste.created_at,
+                "expires_at": paste.expires_at,
+            }))
+        }
+        _ => Err(AppError::NotFound),
+    }
+}
+
+fn scanner_form_defaults(settings: &RuntimeSettings) -> serde_json::Value {
+    let mut command_program = String::new();
+    let mut command_args = String::new();
+    let mut webhook_url = String::new();
+    let mut webhook_secret = String::new();
+    let mut clamav_socket = String::new();
+    for adapter in &settings.scanning.adapters {
+        match adapter {
+            ScannerAdapterConfig::Command { program, args } => {
+                command_program = program.clone();
+                command_args = args.join(" ");
+            }
+            ScannerAdapterConfig::Webhook { url, secret } => {
+                webhook_url = url.clone();
+                webhook_secret = secret.clone().unwrap_or_default();
+            }
+            ScannerAdapterConfig::ClamAv { socket } => {
+                clamav_socket = socket.clone();
+            }
+        }
+    }
+    serde_json::json!({
+        "command_program": command_program,
+        "command_args": command_args,
+        "webhook_url": webhook_url,
+        "webhook_secret": webhook_secret,
+        "clamav_socket": clamav_socket,
+    })
+}
+
+fn parse_required_i64(name: &str, value: Option<&str>) -> AppResult<i64> {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::BadRequest(format!("{name} is required")))?;
+    value
+        .parse::<i64>()
+        .map_err(|err| AppError::BadRequest(format!("{name}: {err}")))
+}
+
+fn parse_optional_i64(value: Option<&str>) -> AppResult<Option<i64>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(value.parse::<i64>().map_err(|err| {
+        AppError::BadRequest(format!("invalid integer: {err}"))
+    })?))
+}
+
+fn parse_optional_usize(value: Option<&str>) -> AppResult<Option<usize>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(value.parse::<usize>().map_err(|err| {
+        AppError::BadRequest(format!("invalid integer: {err}"))
+    })?))
+}
+
+fn parse_optional_u32(value: Option<&str>) -> AppResult<Option<u32>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(value.parse::<u32>().map_err(|err| {
+        AppError::BadRequest(format!("invalid integer: {err}"))
+    })?))
+}
+
+fn parse_optional_u64(value: Option<&str>) -> AppResult<Option<u64>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(value.parse::<u64>().map_err(|err| {
+        AppError::BadRequest(format!("invalid integer: {err}"))
+    })?))
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn lines(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn quota_is_empty(quota: &crate::config::QuotaConfig) -> bool {
+    quota.storage_bytes.is_none()
+        && quota.daily_upload_bytes.is_none()
+        && quota.monthly_upload_bytes.is_none()
+        && quota.item_count.is_none()
+}
+
+fn parse_signup_mode(value: &str) -> AppResult<SignupMode> {
+    match value {
+        "disabled" => Ok(SignupMode::Disabled),
+        "open" => Ok(SignupMode::Open),
+        "invite_only" => Ok(SignupMode::InviteOnly),
+        "admin_created" => Ok(SignupMode::AdminCreated),
+        _ => Err(AppError::BadRequest("invalid signup mode".to_string())),
+    }
+}
+
+fn parse_action_rule(value: &str) -> AppResult<ActionRule> {
+    match value {
+        "disabled" => Ok(ActionRule::Disabled),
+        "anonymous" => Ok(ActionRule::Anonymous),
+        "authenticated" => Ok(ActionRule::Authenticated),
+        "moderator" => Ok(ActionRule::Moderator),
+        "admin" => Ok(ActionRule::Admin),
+        "owner" => Ok(ActionRule::Owner),
+        _ => Err(AppError::BadRequest("invalid action rule".to_string())),
+    }
+}
+
+fn parse_delete_policy(value: &str) -> AppResult<DeletePolicy> {
+    match value {
+        "disabled" => Ok(DeletePolicy::Disabled),
+        "delete_tokens" => Ok(DeletePolicy::DeleteTokens),
+        "no_anonymous_delete" => Ok(DeletePolicy::NoAnonymousDelete),
+        "claim_later" => Ok(DeletePolicy::ClaimLater),
+        _ => Err(AppError::BadRequest("invalid delete policy".to_string())),
+    }
+}
+
+fn parse_scan_decision(value: &str) -> AppResult<ScanDecision> {
+    match value {
+        "allow" => Ok(ScanDecision::Allow),
+        "quarantine" => Ok(ScanDecision::Quarantine),
+        "reject" => Ok(ScanDecision::Reject),
+        _ => Err(AppError::BadRequest(
+            "invalid scanner failure behavior".to_string(),
+        )),
+    }
+}
+
+fn apply_rate_limit_form(
+    rate_limits: &mut BTreeMap<String, RateLimitConfig>,
+    action: &str,
+    enabled: bool,
+    requests: Option<&str>,
+    window_seconds: Option<&str>,
+) -> AppResult<()> {
+    if !enabled {
+        rate_limits.remove(action);
+        return Ok(());
+    }
+    rate_limits.insert(
+        action.to_string(),
+        RateLimitConfig {
+            requests: parse_optional_u32(requests)?.unwrap_or(10),
+            window_seconds: parse_optional_u64(window_seconds)?.unwrap_or(60),
+            enabled: true,
+        },
+    );
+    Ok(())
+}
+
+fn scanner_adapters_from_form(form: &AdminSettingsForm) -> Vec<ScannerAdapterConfig> {
+    let mut adapters = Vec::new();
+    if let Some(program) = nonempty(form.command_scanner_program.as_deref()) {
+        adapters.push(ScannerAdapterConfig::Command {
+            program,
+            args: form
+                .command_scanner_args
+                .as_deref()
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(ToOwned::to_owned)
+                .collect(),
+        });
+    }
+    if let Some(url) = nonempty(form.webhook_scanner_url.as_deref()) {
+        adapters.push(ScannerAdapterConfig::Webhook {
+            url,
+            secret: nonempty(form.webhook_scanner_secret.as_deref()),
+        });
+    }
+    if let Some(socket) = nonempty(form.clamav_socket.as_deref()) {
+        adapters.push(ScannerAdapterConfig::ClamAv { socket });
+    }
+    adapters
+}
+
+fn homepage_blocks_for_form(blocks: &[HomepageBlock]) -> String {
+    blocks
+        .iter()
+        .map(|block| {
+            [
+                block.title.as_str(),
+                block.body.as_str(),
+                block.href.as_deref().unwrap_or_default(),
+                block.link_label.as_deref().unwrap_or_default(),
+            ]
+            .join(" | ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_homepage_blocks(input: Option<&str>) -> AppResult<Vec<HomepageBlock>> {
+    let mut blocks = Vec::new();
+    for line in lines(input) {
+        let mut parts = line.split('|').map(str::trim);
+        let title = parts.next().unwrap_or_default();
+        let body = parts.next().unwrap_or_default();
+        if title.is_empty() || body.is_empty() {
+            return Err(AppError::BadRequest(
+                "homepage blocks require title and body".to_string(),
+            ));
+        }
+        blocks.push(HomepageBlock {
+            title: title.to_string(),
+            body: body.to_string(),
+            href: nonempty(parts.next()),
+            link_label: nonempty(parts.next()),
+        });
+    }
+    Ok(blocks)
+}

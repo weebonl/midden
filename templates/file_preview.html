@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}File {{ page.file.public_id }} | {{ settings.branding.instance_name }}{% endblock %}
+{% block head_extra %}
+  {% if settings.branding.opengraph_files %}
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="{% if page.file.original_filename %}{{ page.file.original_filename }}{% else %}File {{ page.file.public_id }}{% endif %}">
+    <meta property="og:url" content="{{ page.absolute_url }}">
+    {% if page.preview.is_image %}<meta property="og:image" content="{{ page.absolute_raw_url }}">{% endif %}
+  {% endif %}
+{% endblock %}
+{% block content %}
+  <h2>{% if page.file.original_filename %}{{ page.file.original_filename }}{% else %}File {{ page.file.public_id }}{% endif %}</h2>
+  <table class="meta-table">
+    <tr><th>Size</th><td>{{ page.human_size }}</td></tr>
+    <tr><th>Type</th><td>{{ page.file.content_type }}</td></tr>
+    <tr><th>ID</th><td>{{ page.file.public_id }}</td></tr>
+  </table>
+  <p><a href="{{ page.raw_url }}">Open raw file</a> | <a href="/delete/file/{{ page.file.public_id }}">Delete</a>{% if settings.features.reports %} | <a href="/report/file/{{ page.file.public_id }}">Report</a>{% endif %}</p>
+  {% if page.preview.is_image %}
+    <p><img class="file-preview-media" src="{{ page.raw_url }}" alt=""></p>
+  {% elif page.preview.text %}
+    <pre><code>{{ page.preview.text }}</code></pre>
+  {% endif %}
+{% endblock %}

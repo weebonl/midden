@@ -1,0 +1,242 @@
+use std::{collections::BTreeSet, time::Duration};
+
+use crate::{
+    app::AppState,
+    config::{RuntimeSettings, ScanDecision},
+    processing,
+    scanner::{self, ScanInput},
+    util,
+};
+
+#[derive(Debug, Default)]
+pub struct JobSummary {
+    pub expired_files: u64,
+    pub expired_pastes: u64,
+    pub expired_upload_sessions: u64,
+    pub expired_auth_rows: u64,
+    pub deleted_blobs: u64,
+    pub deleted_temp_files: u64,
+    pub scanner_retries: u64,
+    pub metadata_updates: u64,
+    pub missing_blobs: usize,
+    pub orphaned_blobs: usize,
+}
+
+pub fn spawn(state: AppState) {
+    tokio::spawn(async move {
+        let mut last_storage_verify = 0_i64;
+        loop {
+            let interval = match state.settings().await {
+                Ok(settings) => {
+                    if settings.jobs.enabled {
+                        let now = util::now_ts();
+                        let include_storage_verify = now - last_storage_verify
+                            >= settings.jobs.storage_verify_interval_seconds as i64;
+                        let result = run_pass(&state, &settings, include_storage_verify).await;
+                        if result.is_ok() && include_storage_verify {
+                            last_storage_verify = now;
+                        }
+                        if let Err(err) = result {
+                            tracing::warn!(error = %err, "background job pass failed");
+                        }
+                    }
+                    settings.jobs.interval_seconds.max(30)
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "background jobs could not load settings");
+                    300
+                }
+            };
+            tokio::time::sleep(Duration::from_secs(interval)).await;
+        }
+    });
+}
+
+pub async fn run_once(state: &AppState, settings: &RuntimeSettings) -> anyhow::Result<JobSummary> {
+    run_pass(state, settings, true).await
+}
+
+async fn run_pass(
+    state: &AppState,
+    settings: &RuntimeSettings,
+    include_storage_verify: bool,
+) -> anyhow::Result<JobSummary> {
+    let mut summary = cleanup_expired(state).await?;
+    let retry_count = retry_scanners(state, settings).await?;
+    let metadata_updates = process_file_metadata(state, settings).await?;
+    let storage = if include_storage_verify {
+        verify_storage(state).await?
+    } else {
+        (0, 0)
+    };
+    summary.scanner_retries = retry_count;
+    summary.metadata_updates = metadata_updates;
+    summary.missing_blobs = storage.0;
+    summary.orphaned_blobs = storage.1;
+    Ok(summary)
+}
+
+pub async fn cleanup_expired(state: &AppState) -> anyhow::Result<JobSummary> {
+    let mut summary = JobSummary::default();
+    let expired_files = state.db.expired_files().await?;
+    summary.expired_files = expired_files.len() as u64;
+    for file in expired_files {
+        state.db.expire_file(&file.id).await?;
+        let remaining_refs = state.db.decrement_blob_ref(&file.blob_hash).await?;
+        if remaining_refs == 0 {
+            state.storage.delete_blob(&file.blob_hash).await?;
+            summary.deleted_blobs += 1;
+        }
+    }
+
+    summary.expired_pastes = state.db.expire_due_pastes().await?;
+
+    let expired_upload_sessions = state.db.expired_upload_sessions().await?;
+    summary.expired_upload_sessions = expired_upload_sessions.len() as u64;
+    for session in expired_upload_sessions {
+        if tokio::fs::remove_file(&session.temp_path).await.is_ok() {
+            summary.deleted_temp_files += 1;
+        }
+        state.db.delete_upload_session(&session.id).await?;
+    }
+
+    summary.expired_auth_rows = state.db.cleanup_expired_auth_state().await?;
+    Ok(summary)
+}
+
+async fn retry_scanners(state: &AppState, settings: &RuntimeSettings) -> anyhow::Result<u64> {
+    if !settings.scanning.enabled || settings.scanning.adapters.is_empty() {
+        return Ok(0);
+    }
+
+    let candidates = state
+        .db
+        .scanner_retry_file_candidates(settings.jobs.scanner_retry_limit as i64)
+        .await?;
+    let mut retried = 0;
+    for file in candidates {
+        let bytes = state.storage.get_blob(&file.blob_hash).await?;
+        let scan = scanner::scan_upload(
+            &settings.scanning,
+            ScanInput {
+                bytes: &bytes,
+                filename: file.original_filename.as_deref(),
+                content_type: file.content_type.as_deref(),
+                hash: &file.blob_hash,
+                public_id: &file.public_id,
+            },
+        )
+        .await;
+        for report in &scan.reports {
+            state
+                .db
+                .record_scan_result(
+                    "file",
+                    &file.public_id,
+                    &report.adapter,
+                    &format!("{:?}", report.decision).to_lowercase(),
+                    &report.detail,
+                )
+                .await?;
+        }
+        let next_state = match scan.decision {
+            ScanDecision::Allow => "active",
+            ScanDecision::Quarantine | ScanDecision::Reject => "quarantined",
+        };
+        if file.state != next_state {
+            state
+                .db
+                .update_file_state_by_public_id(
+                    &file.public_id,
+                    next_state,
+                    None,
+                    "background scanner retry",
+                )
+                .await?;
+        }
+        retried += 1;
+    }
+    Ok(retried)
+}
+
+async fn process_file_metadata(
+    state: &AppState,
+    settings: &RuntimeSettings,
+) -> anyhow::Result<u64> {
+    if !settings.processing.metadata_extraction && !settings.processing.thumbnails {
+        return Ok(0);
+    }
+    let files = state
+        .db
+        .files_needing_processing(
+            settings.processing.metadata_extraction,
+            settings.processing.thumbnails,
+            settings.jobs.metadata_limit as i64,
+        )
+        .await?;
+    let mut updated = 0;
+    for file in files {
+        let content_type = file
+            .content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream");
+        let mut metadata_json = file.metadata_json.clone();
+        let mut thumbnail_hash = file.thumbnail_hash.clone();
+
+        if settings.processing.metadata_extraction && metadata_json.is_none() {
+            let bytes = state.storage.get_blob(&file.blob_hash).await?;
+            let dimensions = file
+                .image_width
+                .zip(file.image_height)
+                .or_else(|| util::image_dimensions(&bytes));
+            metadata_json = Some(processing::file_metadata_json(
+                content_type,
+                file.size_bytes,
+                dimensions,
+                false,
+            )?);
+        }
+
+        if settings.processing.thumbnails && thumbnail_hash.is_none() {
+            thumbnail_hash = processing::thumbnail_hash(content_type, &file.blob_hash);
+        }
+
+        if metadata_json != file.metadata_json || thumbnail_hash != file.thumbnail_hash {
+            state
+                .db
+                .update_file_metadata(
+                    &file.public_id,
+                    metadata_json.as_deref(),
+                    thumbnail_hash.as_deref(),
+                )
+                .await?;
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
+async fn verify_storage(state: &AppState) -> anyhow::Result<(usize, usize)> {
+    let db_hashes = state
+        .db
+        .blob_hashes()
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let backend_hashes = state
+        .storage
+        .list_hashes()
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let missing = db_hashes.difference(&backend_hashes).count();
+    let orphaned = backend_hashes.difference(&db_hashes).count();
+    if missing > 0 || orphaned > 0 {
+        tracing::warn!(
+            missing,
+            orphaned,
+            "background storage verification found drift"
+        );
+    }
+    Ok((missing, orphaned))
+}

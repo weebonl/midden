@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Browse | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Browse</h2>
+  <form method="get" action="/browse">
+    <p><label>Search public items<br><input name="q" value="{{ page.q }}" placeholder="filename, id, syntax"></label></p>
+    <p><button type="submit">Search</button>{% if page.q %} <a href="/browse">Clear</a>{% endif %}</p>
+  </form>
+
+  <h3>Files</h3>
+  {% if page.files %}
+    <table>
+      <tr><th>File</th><th>Type</th><th>Size</th><th>Created</th></tr>
+      {% for file in page.files %}
+        <tr>
+          <td><a href="/{{ file.public_id }}{% if file.extension %}.{{ file.extension }}{% endif %}">{{ file.original_filename or file.public_id }}</a></td>
+          <td>{{ file.content_type or "" }}</td>
+          <td>{{ human_bytes(file.size_bytes) }}</td>
+          <td>{{ file.created_at }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No public files.</p>
+  {% endif %}
+
+  <h3>Pastes</h3>
+  {% if page.pastes %}
+    <table>
+      <tr><th>Paste</th><th>Syntax</th><th>Size</th><th>Created</th></tr>
+      {% for paste in page.pastes %}
+        <tr>
+          <td><a href="/p/{{ paste.public_id }}">{{ paste.title or paste.public_id }}</a></td>
+          <td>{{ paste.syntax or "" }}</td>
+          <td>{{ paste.content | length }} B</td>
+          <td>{{ paste.created_at }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No public pastes.</p>
+  {% endif %}
+
+  {% if page.next_cursor %}
+    <p><a href="/browse?before={{ page.next_cursor }}{% if page.q %}&q={{ page.q }}{% endif %}">Older items</a></p>
+  {% endif %}
+{% endblock %}

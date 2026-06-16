@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Users | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Users</h2>
+
+  {% if page.invite_token %}
+    <p class="notice">Invite token, shown once: <code>{{ page.invite_token }}</code></p>
+  {% endif %}
+
+  <h3>Create user</h3>
+  <form method="post" action="/admin/users">
+    <p><label>Email<br><input type="email" name="email" required></label></p>
+    <p><label>Username<br><input name="username" required></label></p>
+    <p><label>Password<br><input type="password" name="password" required></label></p>
+    <p><label>Role<br>
+      <select name="role">
+        <option value="user">user</option>
+        <option value="moderator">moderator</option>
+        <option value="admin">admin</option>
+        <option value="owner">owner</option>
+      </select>
+    </label></p>
+    <p><button type="submit">Create user</button></p>
+  </form>
+
+  <h3>Create invite</h3>
+  <form method="post" action="/admin/users/invites">
+    <p><label>Role<br>
+      <select name="role">
+        <option value="user">user</option>
+        <option value="moderator">moderator</option>
+        <option value="admin">admin</option>
+      </select>
+    </label></p>
+    <p><label>Expires after hours, blank for no expiry<br><input type="number" min="1" name="expires_hours"></label></p>
+    <p><button type="submit">Create invite</button></p>
+  </form>
+
+  <h3>Invites</h3>
+  {% if page.invites %}
+    <table>
+      <tr><th>Role</th><th>Status</th><th>Expires</th><th>Used by</th><th>Created</th><th></th></tr>
+      {% for invite in page.invites %}
+        <tr>
+          <td>{{ invite.role }}</td>
+          <td>{% if invite.revoked_at %}revoked{% elif invite.used_at %}used{% else %}active{% endif %}</td>
+          <td>{{ invite.expires_at or "" }}</td>
+          <td>{{ invite.used_by_user_id or "" }}</td>
+          <td>{{ invite.created_at }}</td>
+          <td>
+            {% if not invite.revoked_at and not invite.used_at %}
+              <form method="post" action="/admin/users/invites/{{ invite.id }}/revoke"><button type="submit">Revoke</button></form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No invites.</p>
+  {% endif %}
+
+  <h3>Existing users</h3>
+  {% if page.users %}
+    <table>
+      <tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th>Security</th><th>Actions</th></tr>
+      {% for user in page.users %}
+        <tr>
+          <td>{{ user.username }}</td>
+          <td>{{ user.email }}</td>
+          <td>
+            <form method="post" action="/admin/users/{{ user.id }}/role">
+              <select name="role">
+                <option value="user" {% if user.role == "user" %}selected{% endif %}>user</option>
+                <option value="moderator" {% if user.role == "moderator" %}selected{% endif %}>moderator</option>
+                <option value="admin" {% if user.role == "admin" %}selected{% endif %}>admin</option>
+                <option value="owner" {% if user.role == "owner" %}selected{% endif %}>owner</option>
+              </select>
+              <button type="submit">Save role</button>
+            </form>
+          </td>
+          <td>{% if user.is_disabled %}disabled{% else %}active{% endif %}</td>
+          <td>
+            {% if user.email_verified_at %}verified{% else %}unverified{% endif %}
+            {% if user.two_factor_enabled %}<br>2FA enabled{% endif %}
+          </td>
+          <td>
+            {% if user.is_disabled %}
+              <form method="post" action="/admin/users/{{ user.id }}/enable"><button type="submit">Enable</button></form>
+            {% else %}
+              <form method="post" action="/admin/users/{{ user.id }}/disable"><button type="submit">Disable</button></form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No users.</p>
+  {% endif %}
+{% endblock %}

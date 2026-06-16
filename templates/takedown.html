@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Unavailable | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Unavailable</h2>
+  <p>{{ settings.branding.takedown_page_text }}</p>
+  <table class="meta-table">
+    <tr><th>Kind</th><td>{{ page.kind }}</td></tr>
+    <tr><th>ID</th><td>{{ page.id }}</td></tr>
+    <tr><th>State</th><td>{{ page.state }}</td></tr>
+  </table>
+{% endblock %}

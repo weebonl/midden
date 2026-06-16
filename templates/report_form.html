@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Report | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Report {{ page.kind }} {{ page.id }}</h2>
+  <form method="post" action="/report/{{ page.kind }}/{{ page.id }}">
+    <p><label>Reason<br><input name="reason" required></label></p>
+    <p><label>Details<br><textarea name="details" rows="8"></textarea></label></p>
+    <p><button type="submit">Send report</button></p>
+  </form>
+{% endblock %}

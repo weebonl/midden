@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Admin | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Admin settings</h2>
+  <p><a href="/admin/users">Users</a> | <a href="/admin/search">Search files and pastes</a> | <a href="/admin/reports">Reports</a></p>
+
+  <form method="post" action="/admin/settings">
+    <h3>Features</h3>
+    <p><label><input type="checkbox" name="feature_files" {% if settings.features.files %}checked{% endif %}> Files</label></p>
+    <p><label><input type="checkbox" name="feature_pastes" {% if settings.features.pastes %}checked{% endif %}> Pastes</label></p>
+    <p><label><input type="checkbox" name="feature_accounts" {% if settings.features.accounts %}checked{% endif %}> Accounts</label></p>
+    <p><label><input type="checkbox" name="feature_api" {% if settings.features.api %}checked{% endif %}> API</label></p>
+    <p><label><input type="checkbox" name="feature_reports" {% if settings.features.reports %}checked{% endif %}> Reports</label></p>
+    <p><label><input type="checkbox" name="feature_upload_by_url" {% if settings.features.upload_by_url %}checked{% endif %}> URL upload</label></p>
+    <p><label><input type="checkbox" name="feature_oidc_login" {% if settings.features.oidc_login %}checked{% endif %}> OIDC login</label></p>
+    <p><label><input type="checkbox" name="feature_preview_pages" {% if settings.features.preview_pages %}checked{% endif %}> Preview pages</label></p>
+    <p><label><input type="checkbox" name="feature_public_browse" {% if settings.features.public_browse %}checked{% endif %}> Public browse</label></p>
+    <p><label><input type="checkbox" name="feature_paste_content_search" {% if settings.features.paste_content_search %}checked{% endif %}> Paste content search for owners</label></p>
+    <p><label><input type="checkbox" name="feature_paste_editing" {% if settings.features.paste_editing %}checked{% endif %}> Paste editing for owners</label></p>
+
+    <h3>Policy</h3>
+    <p><label>Signup<br>
+      <select name="signup">
+        <option value="disabled" {% if settings.policy.signup == "disabled" %}selected{% endif %}>disabled</option>
+        <option value="open" {% if settings.policy.signup == "open" %}selected{% endif %}>open</option>
+        <option value="invite_only" {% if settings.policy.signup == "invite_only" %}selected{% endif %}>invite only</option>
+        <option value="admin_created" {% if settings.policy.signup == "admin_created" %}selected{% endif %}>admin created</option>
+      </select>
+    </label></p>
+    {% for item in [
+      ("policy_upload_file", "Upload file", settings.policy.upload_file),
+      ("policy_create_paste", "Create paste", settings.policy.create_paste),
+      ("policy_use_api", "Use API", settings.policy.use_api),
+      ("policy_view_item", "View item", settings.policy.view_item),
+      ("policy_delete_own_item", "Delete own item", settings.policy.delete_own_item),
+      ("policy_claim_anonymous_item", "Claim anonymous item", settings.policy.claim_anonymous_item),
+      ("policy_create_account", "Create account", settings.policy.create_account)
+    ] %}
+      <p><label>{{ item.1 }}<br>
+        <select name="{{ item.0 }}">
+          <option value="disabled" {% if item.2 == "disabled" %}selected{% endif %}>disabled</option>
+          <option value="anonymous" {% if item.2 == "anonymous" %}selected{% endif %}>anonymous</option>
+          <option value="authenticated" {% if item.2 == "authenticated" %}selected{% endif %}>authenticated</option>
+          <option value="moderator" {% if item.2 == "moderator" %}selected{% endif %}>moderator</option>
+          <option value="admin" {% if item.2 == "admin" %}selected{% endif %}>admin</option>
+          <option value="owner" {% if item.2 == "owner" %}selected{% endif %}>owner</option>
+        </select>
+      </label></p>
+    {% endfor %}
+    <p><label>Delete token behavior<br>
+      <select name="delete_policy">
+        <option value="disabled" {% if settings.policy.delete_policy == "disabled" %}selected{% endif %}>disabled</option>
+        <option value="delete_tokens" {% if settings.policy.delete_policy == "delete_tokens" %}selected{% endif %}>delete tokens</option>
+        <option value="no_anonymous_delete" {% if settings.policy.delete_policy == "no_anonymous_delete" %}selected{% endif %}>no anonymous delete</option>
+        <option value="claim_later" {% if settings.policy.delete_policy == "claim_later" %}selected{% endif %}>claim later</option>
+      </select>
+    </label></p>
+
+    <h3>Limits</h3>
+    <p><label>Max upload bytes<br><input type="number" min="1" name="max_upload_bytes" value="{{ settings.limits.max_upload_bytes }}" required></label></p>
+    <p><label>Max paste bytes<br><input type="number" min="1" name="max_paste_bytes" value="{{ settings.limits.max_paste_bytes }}" required></label></p>
+    <p><label>Max tus upload bytes<br><input type="number" min="1" name="max_tus_upload_bytes" value="{{ settings.limits.max_tus_upload_bytes }}" required></label></p>
+    <p><label>Default file expiry<br><input name="default_file_expiry" value="{{ settings.limits.default_file_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
+    <p><label>Default paste expiry<br><input name="default_paste_expiry" value="{{ settings.limits.default_paste_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
+    <h4>Anonymous quota</h4>
+    <p><label>Storage bytes<br><input type="number" min="1" name="anonymous_storage_bytes" value="{{ settings.limits.anonymous_quota.storage_bytes or "" }}"></label></p>
+    <p><label>Daily upload bytes<br><input type="number" min="1" name="anonymous_daily_upload_bytes" value="{{ settings.limits.anonymous_quota.daily_upload_bytes or "" }}"></label></p>
+    <p><label>Monthly upload bytes<br><input type="number" min="1" name="anonymous_monthly_upload_bytes" value="{{ settings.limits.anonymous_quota.monthly_upload_bytes or "" }}"></label></p>
+    <p><label>Item count<br><input type="number" min="1" name="anonymous_item_count" value="{{ settings.limits.anonymous_quota.item_count or "" }}"></label></p>
+    <h4>User quota</h4>
+    <p><label>Storage bytes<br><input type="number" min="1" name="user_storage_bytes" value="{{ settings.limits.role_quotas.user.storage_bytes or "" }}"></label></p>
+    <p><label>Daily upload bytes<br><input type="number" min="1" name="user_daily_upload_bytes" value="{{ settings.limits.role_quotas.user.daily_upload_bytes or "" }}"></label></p>
+    <p><label>Monthly upload bytes<br><input type="number" min="1" name="user_monthly_upload_bytes" value="{{ settings.limits.role_quotas.user.monthly_upload_bytes or "" }}"></label></p>
+    <p><label>Item count<br><input type="number" min="1" name="user_item_count" value="{{ settings.limits.role_quotas.user.item_count or "" }}"></label></p>
+
+    <h3>Security</h3>
+    <p><label><input type="checkbox" name="secure_cookies" {% if settings.security.secure_cookies %}checked{% endif %}> Secure cookies</label></p>
+    <p><label><input type="checkbox" name="reject_mime_mismatch" {% if settings.security.reject_mime_mismatch %}checked{% endif %}> Reject MIME mismatches</label></p>
+    <p><label>Content disposition<br>
+      <select name="content_disposition">
+        <option value="inline" {% if settings.security.content_disposition == "inline" %}selected{% endif %}>inline</option>
+        <option value="attachment" {% if settings.security.content_disposition == "attachment" %}selected{% endif %}>attachment</option>
+      </select>
+    </label></p>
+    <h4>URL upload</h4>
+    <p><label><input type="checkbox" name="url_block_private_ips" {% if settings.security.url_upload.block_private_ips %}checked{% endif %}> Block private, loopback, and link-local IPs</label></p>
+    <p><label>Max redirects<br><input type="number" min="0" name="url_max_redirects" value="{{ settings.security.url_upload.max_redirects }}"></label></p>
+    <p><label>Allowed hosts, one per line<br><textarea name="url_allowed_hosts" rows="4">{{ settings.security.url_upload.allowed_hosts | join("\n") }}</textarea></label></p>
+    <p><label>Blocked hosts, one per line<br><textarea name="url_blocked_hosts" rows="4">{{ settings.security.url_upload.blocked_hosts | join("\n") }}</textarea></label></p>
+
+    <h3>Delivery</h3>
+    <p><label>Public file cache seconds<br><input type="number" min="0" name="delivery_public_cache_seconds" value="{{ settings.delivery.public_cache_seconds }}"></label></p>
+    <p><label>Static asset cache seconds<br><input type="number" min="0" name="delivery_static_cache_seconds" value="{{ settings.delivery.static_cache_seconds }}"></label></p>
+    <p><label><input type="checkbox" name="delivery_signed_internal_urls" {% if settings.delivery.signed_internal_urls %}checked{% endif %}> Signed internal raw file URLs</label></p>
+    <p><label>Internal URL secret<br><input name="delivery_internal_url_secret" value="{{ settings.delivery.internal_url_secret or "" }}"></label></p>
+    <p><label>Internal URL TTL seconds<br><input type="number" min="1" name="delivery_internal_url_ttl_seconds" value="{{ settings.delivery.internal_url_ttl_seconds }}"></label></p>
+
+    <h3>Processing</h3>
+    <p><label><input type="checkbox" name="processing_metadata_extraction" {% if settings.processing.metadata_extraction %}checked{% endif %}> Extract file metadata</label></p>
+    <p><label><input type="checkbox" name="processing_metadata_stripping" {% if settings.processing.metadata_stripping %}checked{% endif %}> Strip supported image metadata on upload</label></p>
+    <p><label><input type="checkbox" name="processing_thumbnails" {% if settings.processing.thumbnails %}checked{% endif %}> Generate image thumbnail references</label></p>
+
+    <h3>Discovery</h3>
+    <p><label><input type="checkbox" name="discovery_robots_index" {% if settings.discovery.robots_index %}checked{% endif %}> Allow robots to index the browse page</label></p>
+    <p><label>Browse page size<br><input type="number" min="1" max="1000" name="discovery_page_size" value="{{ settings.discovery.page_size }}"></label></p>
+
+    <h3>Background jobs</h3>
+    <p><label><input type="checkbox" name="jobs_enabled" {% if settings.jobs.enabled %}checked{% endif %}> Run internal background jobs</label></p>
+    <p><label>Interval seconds<br><input type="number" min="30" name="jobs_interval_seconds" value="{{ settings.jobs.interval_seconds }}"></label></p>
+    <p><label>Metadata batch limit<br><input type="number" min="1" name="jobs_metadata_limit" value="{{ settings.jobs.metadata_limit }}"></label></p>
+    <p><label>Scanner retry batch limit<br><input type="number" min="1" name="jobs_scanner_retry_limit" value="{{ settings.jobs.scanner_retry_limit }}"></label></p>
+    <p><label>Storage verify interval seconds<br><input type="number" min="60" name="jobs_storage_verify_interval_seconds" value="{{ settings.jobs.storage_verify_interval_seconds }}"></label></p>
+
+    <h3>Rate limits</h3>
+    <table>
+      <tr><th>Action</th><th>Enabled</th><th>Requests</th><th>Window seconds</th></tr>
+      {% for row in [
+        ("upload_file", "Upload file", "rl_upload_file", settings.security.rate_limits.upload_file),
+        ("upload_by_url", "URL upload", "rl_upload_by_url", settings.security.rate_limits.upload_by_url),
+        ("login", "Login", "rl_login", settings.security.rate_limits.login),
+        ("password_reset", "Password reset", "rl_password_reset", settings.security.rate_limits.password_reset),
+        ("report", "Report", "rl_report", settings.security.rate_limits.report),
+        ("tus_create", "Tus create", "rl_tus_create", settings.security.rate_limits.tus_create)
+      ] %}
+        <tr>
+          <td>{{ row.1 }}</td>
+          <td><input type="checkbox" name="{{ row.2 }}_enabled" {% if row.3.enabled %}checked{% endif %}></td>
+          <td><input type="number" min="1" name="{{ row.2 }}_requests" value="{{ row.3.requests or "" }}"></td>
+          <td><input type="number" min="1" name="{{ row.2 }}_window" value="{{ row.3.window_seconds or "" }}"></td>
+        </tr>
+      {% endfor %}
+    </table>
+
+    <h3>Scanning</h3>
+    <p><label><input type="checkbox" name="scanning_enabled" {% if settings.scanning.enabled %}checked{% endif %}> Enable scanners</label></p>
+    <p><label>Default failure behavior<br>
+      <select name="default_on_error">
+        <option value="allow" {% if settings.scanning.default_on_error == "allow" %}selected{% endif %}>allow</option>
+        <option value="quarantine" {% if settings.scanning.default_on_error == "quarantine" %}selected{% endif %}>quarantine</option>
+        <option value="reject" {% if settings.scanning.default_on_error == "reject" %}selected{% endif %}>reject</option>
+      </select>
+    </label></p>
+    <p><label>Blocked hashes, one per line<br><textarea name="blocked_hashes" rows="5">{{ page.blocked_hashes }}</textarea></label></p>
+    <p><label>Blocked MIME types, one per line<br><textarea name="blocked_mime_types" rows="5">{{ page.blocked_mime_types }}</textarea></label></p>
+    <p><label>Command scanner program<br><input name="command_scanner_program" value="{{ page.scanner.command_program }}"></label></p>
+    <p><label>Command scanner args<br><input name="command_scanner_args" value="{{ page.scanner.command_args }}"></label></p>
+    <p><label>Webhook scanner URL<br><input type="url" name="webhook_scanner_url" value="{{ page.scanner.webhook_url }}"></label></p>
+    <p><label>Webhook scanner secret<br><input name="webhook_scanner_secret" value="{{ page.scanner.webhook_secret }}"></label></p>
+    <p><label>ClamAV socket<br><input name="clamav_socket" value="{{ page.scanner.clamav_socket }}"></label></p>
+
+    <h3>Branding</h3>
+    <p><label>Instance name<br><input name="instance_name" value="{{ settings.branding.instance_name }}" required></label></p>
+    <p><label>Tagline<br><input name="tagline" value="{{ settings.branding.tagline }}"></label></p>
+    <p><label>Logo URL<br><input name="logo_url" value="{{ settings.branding.logo_url or "" }}"></label></p>
+    <p><label>Favicon URL<br><input name="favicon_url" value="{{ settings.branding.favicon_url or "" }}"></label></p>
+    <p><label>Accent color<br><input name="accent_color" value="{{ settings.branding.accent_color }}"></label></p>
+    <p><label>Dark mode<br>
+      <select name="dark_mode">
+        <option value="auto" {% if settings.branding.dark_mode == "auto" %}selected{% endif %}>automatic</option>
+        <option value="light" {% if settings.branding.dark_mode == "light" %}selected{% endif %}>always light</option>
+        <option value="dark" {% if settings.branding.dark_mode == "dark" %}selected{% endif %}>always dark</option>
+      </select>
+    </label></p>
+    <p><label>OpenGraph description<br><input name="opengraph_description" value="{{ settings.branding.opengraph_description }}"></label></p>
+    <p><label><input type="checkbox" name="opengraph_files" {% if settings.branding.opengraph_files %}checked{% endif %}> File page OpenGraph metadata</label></p>
+    <p><label><input type="checkbox" name="opengraph_pastes" {% if settings.branding.opengraph_pastes %}checked{% endif %}> Paste page OpenGraph metadata</label></p>
+    <p><label>Public takedown text<br><textarea name="takedown_page_text" rows="4">{{ settings.branding.takedown_page_text }}</textarea></label></p>
+    <p><label>Homepage blocks, one per line as title | body | href | link label<br><textarea name="homepage_blocks" rows="5">{{ page.homepage_blocks }}</textarea></label></p>
+    <p><label>Abuse email<br><input type="email" name="abuse_email" value="{{ settings.branding.abuse_email or "" }}"></label></p>
+    <p><label>Contact URL<br><input name="contact_url" value="{{ settings.branding.contact_url or "" }}"></label></p>
+
+    <p><button type="submit">Save settings</button></p>
+  </form>
+{% endblock %}

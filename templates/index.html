@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Upload | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <section class="upload-box">
+    {% if settings.features.files %}
+      <p>Uploads up to {{ page.max_upload }} are allowed.</p>
+      <form method="post" action="/" enctype="multipart/form-data" data-upload-form>
+        <label class="drop-zone" data-drop-zone>
+          <input type="file" name="file" required>
+          <span>Select or drop file</span>
+        </label>
+        <p><label>Expire after, optional<br><input name="expires" list="expiry-presets" value="{{ settings.limits.default_file_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
+        {% if settings.features.public_browse %}
+          <p><label>Visibility<br><select name="visibility"><option value="unlisted">unlisted</option><option value="public">public browse</option></select></label></p>
+        {% endif %}
+        <p class="form-row"><button type="submit">Upload file</button></p>
+        <progress class="upload-progress" max="100" value="0" hidden data-upload-progress></progress>
+      </form>
+    {% else %}
+      <p>File uploads are disabled on this instance.</p>
+    {% endif %}
+  </section>
+
+  <section class="plain-section">
+    {% if settings.features.pastes %}<a href="/p/new">Create a paste</a>{% endif %}
+    {% if settings.features.files %} | <a href="/upload/resumable">Resumable upload</a>{% endif %}
+    {% if settings.features.upload_by_url %} | <a href="/url-upload">Upload via URL</a>{% endif %}
+  </section>
+
+  {% if settings.branding.homepage_blocks %}
+    <section class="homepage-blocks">
+      {% for block in settings.branding.homepage_blocks %}
+        <article class="homepage-block">
+          <h3>{{ block.title }}</h3>
+          <p>{{ block.body }}</p>
+          {% if block.href %}<p><a href="{{ block.href }}">{{ block.link_label or "More" }}</a></p>{% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
+{% endblock %}

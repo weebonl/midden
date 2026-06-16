@@ -1,0 +1,61 @@
+services:
+  midden:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      MIDDEN__SERVER__BIND: "0.0.0.0:8080"
+      MIDDEN__SERVER__PUBLIC_BASE_URL: "http://127.0.0.1:8080"
+      MIDDEN__DATABASE__URL: "postgres://midden:midden@postgres:5432/midden"
+      MIDDEN__STORAGE__BACKEND: "s3"
+      MIDDEN__STORAGE__S3__BUCKET: "midden"
+      MIDDEN__STORAGE__S3__REGION: "us-east-1"
+      MIDDEN__STORAGE__S3__ENDPOINT: "http://minio:9000"
+      MIDDEN__STORAGE__S3__ACCESS_KEY_ID: "midden"
+      MIDDEN__STORAGE__S3__SECRET_ACCESS_KEY: "midden-secret"
+      MIDDEN__STORAGE__S3__ALLOW_HTTP: "true"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: midden
+      POSTGRES_PASSWORD: midden
+      POSTGRES_DB: midden
+    volumes:
+      - midden-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: midden
+      MINIO_ROOT_PASSWORD: midden-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - midden-minio:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 midden midden-secret; do sleep 1; done;
+      mc mb --ignore-existing local/midden;
+      "
+
+volumes:
+  midden-postgres:
+  midden-minio:
+

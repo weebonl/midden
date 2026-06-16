@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Account | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Account</h2>
+  <p>{{ current_user.username }} ({{ current_user.role }})</p>
+
+  <h3>Email</h3>
+  <p>{{ current_user.email }} - {% if page.email_verified %}verified{% else %}not verified{% endif %}</p>
+  {% if not page.email_verified and page.smtp_enabled %}
+    <form method="post" action="/account/email-verification">
+      <p><button type="submit">Send verification email</button></p>
+    </form>
+  {% endif %}
+  {% if page.oidc_link_enabled %}
+    <p><a href="/account/oidc/link">Link OIDC sign-in</a></p>
+  {% endif %}
+
+  <h3>Password</h3>
+  {% if page.has_local_password %}
+    <form method="post" action="/account/password">
+      <p><label>Current password<br><input type="password" name="current_password" required></label></p>
+      <p><label>New password<br><input type="password" name="new_password" required></label></p>
+      <p><button type="submit">Change password</button></p>
+    </form>
+  {% else %}
+    <p>This account signs in through OIDC.</p>
+  {% endif %}
+
+  <h3>Two-factor authentication</h3>
+  {% if page.has_local_password %}
+    {% if page.two_factor_enabled %}
+      <p>Email-code two-factor authentication is enabled.</p>
+      <form method="post" action="/account/two-factor/disable">
+        <p><label>Current password<br><input type="password" name="current_password" required></label></p>
+        <p><button type="submit">Disable two-factor</button></p>
+      </form>
+    {% elif page.smtp_enabled and page.email_verified %}
+      <form method="post" action="/account/two-factor/enable">
+        <p><label>Current password<br><input type="password" name="current_password" required></label></p>
+        <p><button type="submit">Enable two-factor</button></p>
+      </form>
+    {% else %}
+      <p>Two-factor authentication requires SMTP and a verified email address.</p>
+    {% endif %}
+  {% else %}
+    <p>Two-factor authentication is only available for local-password accounts.</p>
+  {% endif %}
+
+  <h3>Account status</h3>
+  <form method="post" action="/account/deactivate">
+    <p><button type="submit">Deactivate account</button></p>
+  </form>
+
+  <form method="get" action="/account">
+    <p><label>Search your items<br><input name="q" value="{{ page.q }}" placeholder="filename, id, syntax"></label></p>
+    <p><button type="submit">Search</button>{% if page.q %} <a href="/account">Clear</a>{% endif %}</p>
+  </form>
+
+  <h3>{% if page.q %}Matching files{% else %}Your recent files{% endif %}</h3>
+  {% if page.files %}
+    <table>
+      <tr><th>File</th><th>Type</th><th>Size</th><th>Image</th><th>State</th></tr>
+      {% for file in page.files %}
+        <tr>
+          <td><a href="/{{ file.public_id }}{% if file.extension %}.{{ file.extension }}{% endif %}">{{ file.original_filename or file.public_id }}</a></td>
+          <td>{{ file.content_type or "" }}</td>
+          <td>{{ human_bytes(file.size_bytes) }}</td>
+          <td>{% if file.image_width and file.image_height %}{{ file.image_width }}x{{ file.image_height }}{% endif %}</td>
+          <td>{{ file.state }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No files yet.</p>
+  {% endif %}
+
+  <h3>{% if page.q %}Matching pastes{% else %}Your recent pastes{% endif %}</h3>
+  {% if page.pastes %}
+    <table>
+      <tr><th>Paste</th><th>Syntax</th><th>Size</th><th>State</th></tr>
+      {% for paste in page.pastes %}
+        <tr>
+          <td><a href="/p/{{ paste.public_id }}">{{ paste.title or paste.public_id }}</a></td>
+          <td>{{ paste.syntax or "" }}</td>
+          <td>{{ paste.content | length }} B</td>
+          <td>{{ paste.state }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No pastes yet.</p>
+  {% endif %}
+
+  <h3>API tokens</h3>
+  {% if page.new_token %}
+    <p class="notice">New token, shown once: <code>{{ page.new_token }}</code></p>
+  {% endif %}
+  <form method="post" action="/account/tokens">
+    <p><label>Name<br><input name="name" required placeholder="script uploads"></label></p>
+    <p><label>Scopes, comma separated<br><input name="scopes" required value="files:write,pastes:write,files:read,pastes:read"></label></p>
+    <p><button type="submit">Create token</button></p>
+  </form>
+  {% if page.tokens %}
+    <table>
+      <tr><th>Name</th><th>Scopes</th><th>Status</th><th></th></tr>
+      {% for token in page.tokens %}
+        <tr>
+          <td>{{ token.name }}</td>
+          <td>{{ token.scopes | join(", ") }}</td>
+          <td>{% if token.revoked_at %}revoked{% else %}active{% endif %}</td>
+          <td>
+            {% if not token.revoked_at %}
+              <form method="post" action="/account/tokens/{{ token.id }}/revoke"><button type="submit">Revoke token</button></form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No API tokens.</p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,217 @@
+use std::sync::Arc;
+
+use bytes::Bytes;
+use futures_util::StreamExt;
+use object_store::{
+    ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, local::LocalFileSystem,
+    path::Path as ObjectPath,
+};
+
+use crate::config::{AppConfig, StorageBackend};
+
+#[derive(Clone)]
+pub struct BlobStorage {
+    store: Arc<dyn ObjectStore>,
+    prefix: Option<String>,
+}
+
+impl BlobStorage {
+    pub async fn from_config(config: &AppConfig) -> anyhow::Result<Self> {
+        match config.storage.backend {
+            StorageBackend::Local => {
+                tokio::fs::create_dir_all(&config.storage.local.path).await?;
+                let store = LocalFileSystem::new_with_prefix(&config.storage.local.path)?;
+                Ok(Self {
+                    store: Arc::new(store),
+                    prefix: None,
+                })
+            }
+            StorageBackend::S3 => {
+                let s3 = &config.storage.s3;
+                if s3.bucket.trim().is_empty() {
+                    anyhow::bail!("storage.s3.bucket is required when storage.backend = \"s3\"");
+                }
+
+                let mut builder = AmazonS3Builder::new()
+                    .with_bucket_name(&s3.bucket)
+                    .with_allow_http(s3.allow_http)
+                    .with_virtual_hosted_style_request(s3.virtual_hosted_style);
+
+                if !s3.region.trim().is_empty() {
+                    builder = builder.with_region(&s3.region);
+                }
+                if let Some(endpoint) = &s3.endpoint {
+                    builder = builder.with_endpoint(endpoint);
+                }
+                if let Some(access_key_id) = &s3.access_key_id {
+                    builder = builder.with_access_key_id(access_key_id);
+                }
+                if let Some(secret_access_key) = &s3.secret_access_key {
+                    builder = builder.with_secret_access_key(secret_access_key);
+                }
+
+                Ok(Self {
+                    store: Arc::new(builder.build()?),
+                    prefix: s3.prefix.clone().filter(|prefix| !prefix.is_empty()),
+                })
+            }
+        }
+    }
+
+    pub async fn put_blob(&self, hash: &str, bytes: Bytes) -> anyhow::Result<()> {
+        self.store
+            .put(
+                &self.object_path(hash),
+                object_store::PutPayload::from_bytes(bytes),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_blob(&self, hash: &str) -> anyhow::Result<Bytes> {
+        Ok(self
+            .store
+            .get(&self.object_path(hash))
+            .await?
+            .bytes()
+            .await?)
+    }
+
+    pub async fn delete_blob(&self, hash: &str) -> anyhow::Result<()> {
+        match self.store.delete(&self.object_path(hash)).await {
+            Ok(()) => Ok(()),
+            Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn exists(&self, hash: &str) -> anyhow::Result<bool> {
+        match self.store.head(&self.object_path(hash)).await {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::NotFound { .. }) => Ok(false),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn health(&self) -> bool {
+        let prefix = self
+            .prefix
+            .as_ref()
+            .map(|prefix| ObjectPath::from(prefix.trim_matches('/').to_string()));
+        let mut stream = self.store.list(prefix.as_ref());
+        matches!(stream.next().await, None | Some(Ok(_)))
+    }
+
+    pub async fn list_hashes(&self) -> anyhow::Result<Vec<String>> {
+        let prefix = self
+            .prefix
+            .as_ref()
+            .map(|prefix| ObjectPath::from(prefix.trim_matches('/').to_string()));
+        let mut stream = self.store.list(prefix.as_ref());
+        let mut hashes = Vec::new();
+        while let Some(meta) = stream.next().await {
+            let meta = meta?;
+            if let Some(hash) = object_hash_from_path(meta.location.as_ref()) {
+                hashes.push(hash);
+            }
+        }
+        hashes.sort();
+        hashes.dedup();
+        Ok(hashes)
+    }
+
+    fn object_path(&self, hash: &str) -> ObjectPath {
+        let safe_hash: String = hash
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        let first = safe_hash.get(0..2).unwrap_or("xx");
+        let second = safe_hash.get(2..4).unwrap_or("xx");
+        let path = match &self.prefix {
+            Some(prefix) => format!(
+                "{}/{}/{}/{}",
+                prefix.trim_matches('/'),
+                first,
+                second,
+                safe_hash
+            ),
+            None => format!("{first}/{second}/{safe_hash}"),
+        };
+        ObjectPath::from(path)
+    }
+}
+
+fn object_hash_from_path(path: &str) -> Option<String> {
+    let hash = path.rsplit('/').next()?.to_ascii_lowercase();
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_storage_round_trips_blobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.storage.local.path = temp.path().join("blobs");
+        let storage = BlobStorage::from_config(&config).await.unwrap();
+        storage
+            .put_blob("abcd1234", Bytes::from_static(b"hello"))
+            .await
+            .unwrap();
+        assert!(storage.exists("abcd1234").await.unwrap());
+        assert_eq!(
+            storage.get_blob("abcd1234").await.unwrap(),
+            Bytes::from_static(b"hello")
+        );
+        assert_eq!(storage.list_hashes().await.unwrap(), vec!["abcd1234"]);
+    }
+
+    #[test]
+    fn extracts_hash_from_backend_path() {
+        assert_eq!(
+            object_hash_from_path("aa/bb/aabbcc").as_deref(),
+            Some("aabbcc")
+        );
+        assert_eq!(object_hash_from_path("aa/not-a-hash"), None);
+    }
+
+    #[tokio::test]
+    async fn s3_storage_round_trip_when_configured() {
+        let Ok(bucket) = std::env::var("MIDDEN_TEST_S3_BUCKET") else {
+            eprintln!("skipping S3 storage smoke; MIDDEN_TEST_S3_BUCKET is not set");
+            return;
+        };
+        let mut config = AppConfig::default();
+        config.storage.backend = crate::config::StorageBackend::S3;
+        config.storage.s3.bucket = bucket;
+        config.storage.s3.region =
+            std::env::var("MIDDEN_TEST_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+        config.storage.s3.endpoint = std::env::var("MIDDEN_TEST_S3_ENDPOINT").ok();
+        config.storage.s3.access_key_id = std::env::var("MIDDEN_TEST_S3_ACCESS_KEY_ID").ok();
+        config.storage.s3.secret_access_key =
+            std::env::var("MIDDEN_TEST_S3_SECRET_ACCESS_KEY").ok();
+        config.storage.s3.prefix = Some(format!("midden-test-{}", crate::util::public_id()));
+        config.storage.s3.allow_http = true;
+
+        let storage = BlobStorage::from_config(&config).await.unwrap();
+        let hash = crate::util::sha256_hex(format!("s3-{}", crate::util::public_id()).as_bytes());
+        storage
+            .put_blob(&hash, Bytes::from_static(b"s3 smoke"))
+            .await
+            .unwrap();
+        assert!(storage.exists(&hash).await.unwrap());
+        assert_eq!(
+            storage.get_blob(&hash).await.unwrap(),
+            Bytes::from_static(b"s3 smoke")
+        );
+        assert!(storage.list_hashes().await.unwrap().contains(&hash));
+        storage.delete_blob(&hash).await.unwrap();
+        assert!(!storage.exists(&hash).await.unwrap());
+    }
+}

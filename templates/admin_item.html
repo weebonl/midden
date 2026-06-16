@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Moderate {{ page.kind }} {{ page.id }} | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Moderate {{ page.kind }} {{ page.id }}</h2>
+
+  <h3>Metadata</h3>
+  <table class="meta-table">
+    <tr><th>ID</th><td>{{ page.item.public_id }}</td></tr>
+    <tr><th>State</th><td>{{ page.item.state }}</td></tr>
+    <tr><th>Visibility</th><td>{{ page.item.visibility }}</td></tr>
+    {% if page.kind == "file" %}
+      <tr><th>Name</th><td>{{ page.item.filename or "" }}</td></tr>
+      <tr><th>Type</th><td>{{ page.item.content_type or "" }}</td></tr>
+      <tr><th>Size</th><td>{{ human_bytes(page.item.size_bytes) }}</td></tr>
+      <tr><th>Image</th><td>{% if page.item.image_width and page.item.image_height %}{{ page.item.image_width }}x{{ page.item.image_height }}{% endif %}</td></tr>
+      <tr><th>Thumbnail</th><td>{{ page.item.thumbnail_hash or "" }}</td></tr>
+      <tr><th>Blob hash</th><td><code>{{ page.item.blob_hash }}</code></td></tr>
+    {% else %}
+      <tr><th>Title</th><td>{{ page.item.title or "" }}</td></tr>
+      <tr><th>Syntax</th><td>{{ page.item.syntax or "" }}</td></tr>
+      <tr><th>Size</th><td>{{ page.item.size_bytes }} B</td></tr>
+    {% endif %}
+    <tr><th>Created</th><td>{{ page.item.created_at }}</td></tr>
+    <tr><th>Expires</th><td>{{ page.item.expires_at or "" }}</td></tr>
+  </table>
+
+  <h3>State</h3>
+  <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+    <p><label>State<br>
+      <select name="state">
+        <option value="active" {% if page.item.state == "active" %}selected{% endif %}>active</option>
+        <option value="quarantined" {% if page.item.state == "quarantined" %}selected{% endif %}>quarantined</option>
+        <option value="takedown" {% if page.item.state == "takedown" %}selected{% endif %}>takedown</option>
+        <option value="legal_hold" {% if page.item.state == "legal_hold" %}selected{% endif %}>legal hold</option>
+        <option value="deleted" {% if page.item.state == "deleted" %}selected{% endif %}>deleted</option>
+      </select>
+    </label></p>
+    <p><button type="submit" name="action" value="set_state">Save state</button></p>
+  </form>
+
+  <h3>Visibility</h3>
+  <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+    <p><label>Visibility<br>
+      <select name="visibility">
+        <option value="unlisted" {% if page.item.visibility == "unlisted" %}selected{% endif %}>unlisted</option>
+        <option value="public" {% if page.item.visibility == "public" %}selected{% endif %}>public browse</option>
+      </select>
+    </label></p>
+    <p><button type="submit" name="action" value="set_visibility">Save visibility</button></p>
+  </form>
+
+  {% if page.kind == "file" and page.item.metadata %}
+    <h3>Extracted metadata</h3>
+    <table class="meta-table">
+      <tr><th>Content type</th><td>{{ page.item.metadata.content_type or "" }}</td></tr>
+      <tr><th>Size</th><td>{{ human_bytes(page.item.metadata.size_bytes) }}</td></tr>
+      <tr><th>Image</th><td>{% if page.item.metadata.image_width and page.item.metadata.image_height %}{{ page.item.metadata.image_width }}x{{ page.item.metadata.image_height }}{% endif %}</td></tr>
+      <tr><th>Metadata stripped</th><td>{{ page.item.metadata.metadata_stripped }}</td></tr>
+    </table>
+  {% endif %}
+
+  <h3>Notes</h3>
+  <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+    <p><label>Moderator note<br><textarea name="note" rows="4"></textarea></label></p>
+    <p><button type="submit" name="action" value="add_note">Add note</button></p>
+  </form>
+  {% if page.kind == "file" %}
+    <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+      <p><button type="submit" name="action" value="block_hash">Block this file hash</button></p>
+    </form>
+  {% endif %}
+  {% if page.notes %}
+    <table>
+      <tr><th>When</th><th>Actor</th><th>Note</th></tr>
+      {% for note in page.notes %}
+        <tr><td>{{ note.created_at }}</td><td>{{ note.actor_user_id or "" }}</td><td>{{ note.note }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No notes.</p>
+  {% endif %}
+
+  <h3>Reports</h3>
+  {% if page.reports %}
+    <table>
+      <tr><th>Reason</th><th>State</th><th>Details</th><th>Created</th></tr>
+      {% for report in page.reports %}
+        <tr><td>{{ report.reason }}</td><td>{{ report.state }}</td><td>{{ report.details }}</td><td>{{ report.created_at }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No reports.</p>
+  {% endif %}
+
+  <h3>Scan results</h3>
+  {% if page.scans %}
+    <table>
+      <tr><th>Adapter</th><th>Decision</th><th>Detail</th><th>Created</th></tr>
+      {% for scan in page.scans %}
+        <tr><td>{{ scan.adapter }}</td><td>{{ scan.decision }}</td><td>{{ scan.detail }}</td><td>{{ scan.created_at }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No scan results.</p>
+  {% endif %}
+
+  <h3>Audit</h3>
+  {% if page.audits %}
+    <table>
+      <tr><th>Action</th><th>Actor</th><th>Detail</th><th>Created</th></tr>
+      {% for event in page.audits %}
+        <tr><td>{{ event.action }}</td><td>{{ event.actor_user_id or "" }}</td><td>{{ event.detail }}</td><td>{{ event.created_at }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No audit events.</p>
+  {% endif %}
+{% endblock %}

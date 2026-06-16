@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Uploaded | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Uploaded</h2>
+  <p>Your file is available at:</p>
+  <p><input class="copy-field" value="{{ page.url }}" readonly></p>
+  <p><a href="{{ page.url }}">Open link</a> | <a href="{{ page.raw_url }}">Raw file</a> | <a href="/delete/file/{{ page.file.public_id }}">Delete</a></p>
+  {% if page.delete_token %}
+    <p class="notice">Delete token, shown once: <code>{{ page.delete_token }}</code></p>
+    <p>Log in later and use <a href="/claim/file/{{ page.file.public_id }}">claim file</a> with that token to attach it to your account.</p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Admin Search | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Admin search</h2>
+  <form method="get" action="/admin/search">
+    <p><label>Search<br><input name="q" value="{{ page.q }}"></label></p>
+    <p><label><input type="checkbox" name="paste_content" value="true" {% if page.paste_content %}checked{% endif %}> Include paste content</label></p>
+    <p><button type="submit">Search</button></p>
+  </form>
+
+  {% if page.q %}
+    <h3>Files</h3>
+    {% if page.files %}
+      <table>
+        <tr><th>ID</th><th>Name</th><th>Type</th><th>Size</th><th>Image</th><th>State</th></tr>
+        {% for file in page.files %}
+          <tr>
+            <td><a href="/{{ file.public_id }}{% if file.extension %}.{{ file.extension }}{% endif %}">{{ file.public_id }}</a></td>
+            <td>{{ file.original_filename or "" }}</td>
+            <td>{{ file.content_type or "" }}</td>
+            <td>{{ human_bytes(file.size_bytes) }}</td>
+            <td>{% if file.image_width and file.image_height %}{{ file.image_width }}x{{ file.image_height }}{% endif %}</td>
+            <td>{{ file.state }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p>No files matched.</p>
+    {% endif %}
+
+    <h3>Pastes</h3>
+    {% if page.pastes %}
+      <table>
+        <tr><th>ID</th><th>Title</th><th>Syntax</th><th>State</th></tr>
+        {% for paste in page.pastes %}
+          <tr>
+            <td><a href="/p/{{ paste.public_id }}">{{ paste.public_id }}</a></td>
+            <td>{{ paste.title or "" }}</td>
+            <td>{{ paste.syntax or "" }}</td>
+            <td>{{ paste.state }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p>No pastes matched.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %}

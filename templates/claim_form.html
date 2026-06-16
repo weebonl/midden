@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Claim | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Claim {{ page.kind }} {{ page.id }}</h2>
+  <form method="post" action="/claim/{{ page.kind }}/{{ page.id }}">
+    <p><label>Delete token<br><input name="token" required></label></p>
+    <p><button type="submit">Claim {{ page.kind }}</button></p>
+  </form>
+{% endblock %}
+

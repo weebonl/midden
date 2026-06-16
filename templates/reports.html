@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Reports | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Reports</h2>
+
+  <form method="get" action="/admin/reports">
+    <p><label>State<br>
+      <select name="state">
+        <option value="" {% if not page.filters.state %}selected{% endif %}>any</option>
+        <option value="open" {% if page.filters.state == "open" %}selected{% endif %}>open</option>
+        <option value="resolved" {% if page.filters.state == "resolved" %}selected{% endif %}>resolved</option>
+        <option value="dismissed" {% if page.filters.state == "dismissed" %}selected{% endif %}>dismissed</option>
+      </select>
+    </label></p>
+    <p><label>Kind<br>
+      <select name="kind">
+        <option value="" {% if not page.filters.kind %}selected{% endif %}>any</option>
+        <option value="file" {% if page.filters.kind == "file" %}selected{% endif %}>file</option>
+        <option value="paste" {% if page.filters.kind == "paste" %}selected{% endif %}>paste</option>
+      </select>
+    </label></p>
+    <p><label>Reason contains<br><input name="reason" value="{{ page.filters.reason }}"></label></p>
+    <p><label>Created in last days<br><input type="number" min="1" name="days" value="{{ page.filters.days or "" }}"></label></p>
+    <p><button type="submit">Filter reports</button> <a href="/admin/reports">Clear</a></p>
+  </form>
+
+  {% if page.reports %}
+    <form id="bulk-reports" method="post" action="/admin/reports/bulk"></form>
+      <p><label>Bulk note<br><textarea form="bulk-reports" name="note" rows="3"></textarea></label></p>
+      <p>
+        <button form="bulk-reports" type="submit" name="action" value="resolve">Resolve selected</button>
+        <button form="bulk-reports" type="submit" name="action" value="dismiss">Dismiss selected</button>
+        <button form="bulk-reports" type="submit" name="action" value="quarantine">Quarantine selected</button>
+        <button form="bulk-reports" type="submit" name="action" value="takedown">Takedown selected</button>
+        <button form="bulk-reports" type="submit" name="action" value="legal_hold">Legal hold selected</button>
+      </p>
+      <table>
+        <tr><th></th><th>Item</th><th>Reason</th><th>State</th><th>Details</th><th>Note</th><th>Actions</th></tr>
+        {% for report in page.reports %}
+          <tr>
+            <td><input form="bulk-reports" type="checkbox" name="report_ids" value="{{ report.id }}"></td>
+            <td>
+              {{ report.item_kind }}
+              {% if report.item_kind == "file" %}
+                <a href="/{{ report.item_public_id }}">{{ report.item_public_id }}</a>
+              {% elif report.item_kind == "paste" %}
+                <a href="/p/{{ report.item_public_id }}">{{ report.item_public_id }}</a>
+              {% else %}
+                {{ report.item_public_id }}
+              {% endif %}
+              <br><a href="/admin/items/{{ report.item_kind }}/{{ report.item_public_id }}">moderate</a>
+            </td>
+            <td>{{ report.reason }}</td>
+            <td>{{ report.state }}</td>
+            <td>{{ report.details }}</td>
+            <td><textarea form="report-{{ report.id }}" name="note" rows="2"></textarea></td>
+            <td>
+              <form id="report-{{ report.id }}" class="inline" method="post" action="/admin/reports/{{ report.id }}">
+                <button type="submit" name="action" value="resolve">Resolve</button>
+                <button type="submit" name="action" value="dismiss">Dismiss</button>
+                <button type="submit" name="action" value="quarantine">Quarantine</button>
+                <button type="submit" name="action" value="takedown">Takedown</button>
+                <button type="submit" name="action" value="legal_hold">Legal hold</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </table>
+  {% else %}
+    <p>No reports.</p>
+  {% endif %}
+{% endblock %}

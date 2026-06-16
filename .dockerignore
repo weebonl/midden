@@ -1,0 +1,8 @@
+target
+.git
+data
+midden.db*
+*.db
+*.db-shm
+*.db-wal
+

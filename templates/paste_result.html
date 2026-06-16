@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Paste created | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Paste created</h2>
+  <p>Your paste is available at:</p>
+  <p><input class="copy-field" value="{{ page.url }}" readonly></p>
+  <p><a href="{{ page.url }}">Open paste</a> | <a href="{{ page.raw_url }}">Raw paste</a> | <a href="/delete/paste/{{ page.paste.public_id }}">Delete</a>{% if current_user %} | <a href="/account">Account</a>{% endif %}</p>
+  {% if page.delete_token %}
+    <p class="notice">Delete token, shown once: <code>{{ page.delete_token }}</code></p>
+    <p>Log in later and use <a href="/claim/paste/{{ page.paste.public_id }}">claim paste</a> with that token to attach it to your account.</p>
+  {% endif %}
+{% endblock %}
+

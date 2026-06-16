@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Two-factor authentication | {{ settings.branding.instance_name }}{% endblock %}
+{% block content %}
+  <h2>Two-factor authentication</h2>
+  <p>Enter the code sent to your email address.</p>
+  <form method="post" action="/auth/2fa">
+    <p><label>Code<br><input name="code" required autocomplete="one-time-code" autofocus></label></p>
+    <p><button type="submit">Continue</button></p>
+  </form>
+{% endblock %}
