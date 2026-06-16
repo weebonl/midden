@@ -10,6 +10,12 @@ pub(super) async fn admin(
         return Err(AppError::Forbidden);
     }
     let scanner_defaults = scanner_form_defaults(&settings);
+    let user_quota = settings
+        .limits
+        .role_quotas
+        .get("user")
+        .cloned()
+        .unwrap_or_default();
     render(
         &state,
         "admin.html",
@@ -20,6 +26,7 @@ pub(super) async fn admin(
             "blocked_mime_types": settings.scanning.blocked_mime_types.join("\n"),
             "homepage_blocks": homepage_blocks_for_form(&settings.branding.homepage_blocks),
             "scanner": scanner_defaults,
+            "user_quota": user_quota,
         }),
     )
 }
@@ -748,6 +755,7 @@ pub(super) async fn admin_reports(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn render_reports_table(
     state: &AppState,
     settings: &RuntimeSettings,

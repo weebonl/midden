@@ -257,11 +257,13 @@ async fn upload_form_file(
         requested_visibility(&settings, form.visibility.as_deref())?,
     )
     .await?;
+    let preview = file_preview_context(&state, &result.file).await?;
     let page = serde_json::json!({
         "url": result.url,
         "raw_url": result.raw_url,
         "delete_token": result.delete_token,
         "file": result.file,
+        "preview": preview,
     });
     Ok(render(&state, "upload_result.html", &settings, user.as_ref(), page)?.into_response())
 }
@@ -335,11 +337,13 @@ async fn url_upload(
         requested_visibility(&settings, form.visibility.as_deref())?,
     )
     .await?;
+    let preview = file_preview_context(&state, &result.file).await?;
     let page = serde_json::json!({
         "url": result.url,
         "raw_url": result.raw_url,
         "delete_token": result.delete_token,
         "file": result.file,
+        "preview": preview,
     });
     Ok(render(&state, "upload_result.html", &settings, user.as_ref(), page)?.into_response())
 }
@@ -2310,6 +2314,113 @@ mod tests {
             base64::Engine::encode(engine, filename),
             base64::Engine::encode(engine, content_type)
         )
+    }
+
+    fn csrf_cookie_from(headers: &reqwest::header::HeaderMap) -> String {
+        headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .filter_map(|value| value.split(';').next())
+            .find_map(|cookie| cookie.strip_prefix("midden_csrf=").map(ToOwned::to_owned))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_settings_renders_without_user_role_quota() {
+        let issuer = spawn_oidc_provider(serde_json::json!({
+            "sub": "unused-admin-settings",
+            "email": "unused-admin-settings@example.test",
+            "groups": ["admins"]
+        }))
+        .await;
+        let state = test_state(issuer).await;
+        let admin = state
+            .db
+            .create_user(
+                "admin-settings@example.test",
+                "admin-settings",
+                Some("password-hash"),
+                Role::Admin,
+            )
+            .await
+            .unwrap();
+        let session_token = util::secret_token();
+        state
+            .db
+            .create_session(
+                &admin.id,
+                &util::hash_token(&session_token),
+                util::now_ts() + 60,
+            )
+            .await
+            .unwrap();
+
+        let response = state
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .header(header::COOKIE, format!("midden_session={session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("User quota"));
+        assert!(body.contains("name=\"user_storage_bytes\" value=\"\""));
+    }
+
+    #[tokio::test]
+    async fn browser_upload_result_shows_image_preview() {
+        let issuer = spawn_oidc_provider(serde_json::json!({
+            "sub": "unused-browser-upload",
+            "email": "unused-browser-upload@example.test",
+            "groups": ["admins"]
+        }))
+        .await;
+        let state = test_state(issuer).await;
+        let base = spawn_http_app(state).await;
+        let client = reqwest::Client::new();
+
+        let home = client.get(format!("{base}/")).send().await.unwrap();
+        assert_eq!(home.status(), StatusCode::OK);
+        let csrf = csrf_cookie_from(home.headers());
+        let png = hex_fixture(include_str!("../tests/fixtures/sample.png.hex"));
+        let upload = client
+            .post(format!("{base}/"))
+            .header(header::COOKIE, format!("midden_csrf={csrf}"))
+            .multipart(
+                reqwest::multipart::Form::new()
+                    .text("csrf_token", csrf)
+                    .part(
+                        "file",
+                        reqwest::multipart::Part::bytes(png)
+                            .file_name("sample.png")
+                            .mime_str("image/png")
+                            .unwrap(),
+                    ),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(upload.status(), StatusCode::OK);
+        let body = upload.text().await.unwrap();
+        assert!(body.contains("class=\"file-preview-media\""));
+        assert!(body.contains("alt=\"sample.png\""));
     }
 
     #[tokio::test]

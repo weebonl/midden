@@ -77,10 +77,10 @@
     <p><label>Monthly upload bytes<br><input type="number" min="1" name="anonymous_monthly_upload_bytes" value="{{ settings.limits.anonymous_quota.monthly_upload_bytes or "" }}"></label></p>
     <p><label>Item count<br><input type="number" min="1" name="anonymous_item_count" value="{{ settings.limits.anonymous_quota.item_count or "" }}"></label></p>
     <h4>User quota</h4>
-    <p><label>Storage bytes<br><input type="number" min="1" name="user_storage_bytes" value="{{ settings.limits.role_quotas.user.storage_bytes or "" }}"></label></p>
-    <p><label>Daily upload bytes<br><input type="number" min="1" name="user_daily_upload_bytes" value="{{ settings.limits.role_quotas.user.daily_upload_bytes or "" }}"></label></p>
-    <p><label>Monthly upload bytes<br><input type="number" min="1" name="user_monthly_upload_bytes" value="{{ settings.limits.role_quotas.user.monthly_upload_bytes or "" }}"></label></p>
-    <p><label>Item count<br><input type="number" min="1" name="user_item_count" value="{{ settings.limits.role_quotas.user.item_count or "" }}"></label></p>
+    <p><label>Storage bytes<br><input type="number" min="1" name="user_storage_bytes" value="{{ page.user_quota.storage_bytes or "" }}"></label></p>
+    <p><label>Daily upload bytes<br><input type="number" min="1" name="user_daily_upload_bytes" value="{{ page.user_quota.daily_upload_bytes or "" }}"></label></p>
+    <p><label>Monthly upload bytes<br><input type="number" min="1" name="user_monthly_upload_bytes" value="{{ page.user_quota.monthly_upload_bytes or "" }}"></label></p>
+    <p><label>Item count<br><input type="number" min="1" name="user_item_count" value="{{ page.user_quota.item_count or "" }}"></label></p>
     </details>
 
     <details class="settings-section" open>

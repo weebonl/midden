@@ -114,7 +114,64 @@
     parent.appendChild(link);
   }
 
-  function setUploadCompleteStatus(result) {
+  function fileLabel(file) {
+    return file && file.name ? file.name : "Uploaded file";
+  }
+
+  function fileExtension(file) {
+    if (!file || !file.name || !file.name.includes(".")) return "";
+    return file.name.split(".").pop().toLowerCase();
+  }
+
+  function isPreviewImage(file) {
+    const type = file && file.type ? file.type.toLowerCase() : "";
+    return (
+      type === "image/png" ||
+      type === "image/gif" ||
+      type === "image/jpeg" ||
+      ["png", "gif", "jpg", "jpeg"].includes(fileExtension(file))
+    );
+  }
+
+  function isPreviewText(file) {
+    const type = file && file.type ? file.type.toLowerCase() : "";
+    return (
+      type.startsWith("text/") ||
+      ["application/json", "application/xml", "application/javascript"].includes(type) ||
+      ["txt", "md", "json", "xml", "js", "css", "csv", "log"].includes(fileExtension(file))
+    );
+  }
+
+  function appendUploadPreview(result, file) {
+    if (!file) return;
+    if (result.rawUrl && isPreviewImage(file)) {
+      const wrapper = document.createElement("p");
+      const image = document.createElement("img");
+      image.className = "file-preview-media";
+      image.src = result.rawUrl;
+      image.alt = fileLabel(file);
+      wrapper.appendChild(image);
+      uploadStatus.appendChild(wrapper);
+      return;
+    }
+    if (isPreviewText(file) && file.size <= 128 * 1024 && typeof file.text === "function") {
+      const preview = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = "Loading preview...";
+      preview.appendChild(code);
+      uploadStatus.appendChild(preview);
+      file
+        .text()
+        .then((text) => {
+          code.textContent = text.slice(0, 8000);
+        })
+        .catch(() => {
+          preview.remove();
+        });
+    }
+  }
+
+  function setUploadCompleteStatus(result, file) {
     if (!uploadStatus) return;
     uploadStatus.hidden = false;
     uploadStatus.classList.remove("error");
@@ -138,6 +195,8 @@
       if (result.deleteUrl) appendLink(links, "Delete", result.deleteUrl);
       uploadStatus.appendChild(links);
     }
+
+    appendUploadPreview(result, file);
 
     if (result.deleteToken) {
       const token = document.createElement("p");
@@ -258,7 +317,7 @@
         if (uploadProgress) uploadProgress.value = Math.round((offset / file.size) * 100);
         if (result.finalUrl) {
           forgetLocation(file);
-          setUploadCompleteStatus(result);
+          setUploadCompleteStatus(result, file);
         }
       }
       forgetLocation(file);
