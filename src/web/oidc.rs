@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    create_session_response,
+    auth::create_session_response,
     support::{current_user, transient_cookie},
 };
 

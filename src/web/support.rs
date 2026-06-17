@@ -104,6 +104,11 @@ pub(super) fn validate_csrf(jar: &CookieJar, submitted: Option<&str>) -> AppResu
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct CsrfForm {
+    pub(super) csrf_token: Option<String>,
+}
+
 pub(super) async fn enforce_rate_limit(
     state: &AppState,
     settings: &RuntimeSettings,
@@ -213,4 +218,65 @@ pub(super) fn transient_cookie(name: &'static str, value: String) -> Cookie<'sta
     cookie.set_same_site(SameSite::Lax);
     cookie.set_max_age(time::Duration::minutes(10));
     cookie
+}
+
+pub(super) fn parse_scopes(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+pub(super) fn requested_visibility(
+    settings: &RuntimeSettings,
+    value: Option<&str>,
+) -> AppResult<&'static str> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("unlisted") => Ok("unlisted"),
+        Some("public") if settings.features.public_browse => Ok("public"),
+        Some("public") => Err(AppError::BadRequest(
+            "public visibility requires public browse to be enabled".to_string(),
+        )),
+        _ => Err(AppError::BadRequest("invalid visibility".to_string())),
+    }
+}
+
+pub(super) fn parse_expiry_or_default(
+    input: Option<&str>,
+    default_input: Option<&str>,
+) -> anyhow::Result<Option<i64>> {
+    let selected = input
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            default_input
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+    util::parse_expiry(selected)
+}
+
+pub(super) fn normalize_syntax(input: Option<&str>) -> Option<String> {
+    let syntax = input?.trim().to_ascii_lowercase();
+    if syntax.is_empty() {
+        return None;
+    }
+    Some(
+        match syntax.as_str() {
+            "txt" | "plain" => "text",
+            "js" | "mjs" | "cjs" => "javascript",
+            "ts" => "typescript",
+            "py" => "python",
+            "rb" => "ruby",
+            "rs" => "rust",
+            "sh" | "shell" => "bash",
+            "yml" => "yaml",
+            "md" => "markdown",
+            "htm" => "html",
+            other => other,
+        }
+        .to_string(),
+    )
 }

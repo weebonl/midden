@@ -229,3 +229,33 @@ async fn upload_session_owner(
     };
     Ok(Some(state.db.user_by_id(owner_user_id).await?))
 }
+
+fn parse_i64_header(headers: &HeaderMap, name: &'static str) -> AppResult<i64> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(|| AppError::BadRequest(format!("missing or invalid {name} header")))
+}
+
+fn parse_tus_metadata(headers: &HeaderMap) -> BTreeMap<String, String> {
+    let Some(value) = headers
+        .get("Upload-Metadata")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return BTreeMap::new();
+    };
+    value
+        .split(',')
+        .filter_map(|pair| {
+            let mut parts = pair.trim().splitn(2, ' ');
+            let key = parts.next()?.trim().replace('-', "_");
+            let encoded = parts.next().unwrap_or_default();
+            let decoded =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())?;
+            Some((key, decoded))
+        })
+        .collect()
+}
