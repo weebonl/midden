@@ -294,7 +294,7 @@ async fn serve_file(state: &AppState, file: FileItem) -> AppResult<Response> {
         .storage
         .get_blob_stream(&file.blob_hash)
         .await?
-        .map(|res| res.map_err(|err| axum::Error::new(err)));
+        .map(|res| res.map_err(axum::Error::new));
     let body = axum::body::Body::from_stream(stream);
     let content_type = file
         .content_type
