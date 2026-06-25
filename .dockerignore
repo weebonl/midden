@@ -5,4 +5,7 @@ midden.db*
 *.db
 *.db-shm
 *.db-wal
-
+.github
+Dockerfile
+docker-compose*.yml
+*.log
