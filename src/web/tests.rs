@@ -208,7 +208,7 @@ async fn admin_ui_exposes_wide_shell_and_settings_affordances() {
     assert!(body.contains("class=\"page page--wide page--admin\""));
     assert!(body.contains("class=\"admin-nav\""));
     assert!(body.contains("data-admin-settings-form"));
-    assert!(body.contains("class=\"settings-actions\""));
+    assert!(body.contains("class=\"settings-tabs\""));
     assert!(body.contains("class=\"settings-save-bar\""));
     assert!(body.contains("data-settings-section=\"features\""));
     assert!(body.contains("data-secret-input"));
