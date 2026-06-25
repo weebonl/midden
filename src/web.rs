@@ -66,6 +66,50 @@ const CSRF_COOKIE: &str = "midden_csrf";
 const CSRF_FIELD: &str = "csrf_token";
 const TWO_FACTOR_CHALLENGE_COOKIE: &str = "midden_2fa_challenge";
 
+#[derive(Clone)]
+pub struct RequestContext {
+    pub templates: crate::templates::Templates,
+    pub settings: crate::config::RuntimeSettings,
+    pub current_user: Option<crate::db::User>,
+    pub is_htmx: bool,
+}
+
+tokio::task_local! {
+    pub static REQUEST_CONTEXT: RequestContext;
+}
+
+async fn request_context_middleware(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Response {
+    let settings = match state.settings().await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!(error = %err, "failed to load settings in middleware");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html("internal server error".to_string())
+            ).into_response();
+        }
+    };
+    let current_user = current_user(&state, &jar).await.unwrap_or(None);
+    let is_htmx = htmx_request(&headers);
+
+    let ctx = RequestContext {
+        templates: state.templates.clone(),
+        settings,
+        current_user,
+        is_htmx,
+    };
+
+    REQUEST_CONTEXT.scope(ctx, async {
+        next.run(request).await
+    }).await
+}
+
 pub fn router(state: AppState) -> Router {
     let metrics_state = state.clone();
     let csrf_state = state.clone();
@@ -171,6 +215,10 @@ pub fn router(state: AppState) -> Router {
         .route("/{slug}", get(file_slug))
         .layer(CompressionLayer::new())
         .layer(middleware::from_fn(api_error_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_context_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             metrics_state,
             request_metrics_middleware,

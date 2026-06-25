@@ -105,6 +105,37 @@ impl IntoResponse for AppError {
             self.to_string()
         };
 
+        if let Ok(response) = crate::web::REQUEST_CONTEXT.try_with(|ctx| {
+            if ctx.is_htmx {
+                let html = format!(
+                    "<div class=\"notice error\" x-data=\"{{ show: true }}\" x-show=\"show\">\
+                       <span>Error: {}</span>\
+                       <button type=\"button\" class=\"link-button\" x-on:click=\"show = false\" style=\"float: right; margin-top: -2px; font-weight: bold; text-decoration: none;\">&times;</button>\
+                     </div>",
+                    html_escape::encode_text(&message)
+                );
+                (status, Html(html)).into_response()
+            } else {
+                match ctx.templates.render(
+                    "error.html",
+                    &ctx.settings,
+                    ctx.current_user.as_ref(),
+                    serde_json::json!({ "message": message }),
+                ) {
+                    Ok(rendered) => (status, Html(rendered)).into_response(),
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to render error template");
+                        (status, Html(format!(
+                            "<!doctype html><title>{status}</title><main><h1>{status}</h1><p>{}</p><p><a href=\"/\">Return home</a></p></main>",
+                            html_escape::encode_text(&message)
+                        ))).into_response()
+                    }
+                }
+            }
+        }) {
+            return response;
+        }
+
         (status, Html(format!(
             "<!doctype html><title>{status}</title><main><h1>{status}</h1><p>{}</p><p><a href=\"/\">Return home</a></p></main>",
             html_escape::encode_text(&message)
