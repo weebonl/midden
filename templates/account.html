@@ -5,58 +5,73 @@
   <h2>Account</h2>
   <p>{{ current_user.username }} ({{ current_user.role }})</p>
 
-  <h3>Email</h3>
-  <p>{{ current_user.email }} - {% if page.email_verified %}verified{% else %}not verified{% endif %}</p>
-  {% if not page.email_verified and page.smtp_enabled %}
-    <form method="post" action="/account/email-verification">
-      <p><button type="submit">Send verification email</button></p>
-    </form>
-  {% endif %}
-  {% if page.oidc_link_enabled %}
-    <p><a href="/account/oidc/link">Link OIDC sign-in</a></p>
-  {% endif %}
+  <div x-data="{ activeTab: 'items' }">
+    <nav class="settings-tabs" aria-label="Account Tabs">
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'items' }" x-on:click="activeTab = 'items'">My Items</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" x-on:click="activeTab = 'security'">Security & Settings</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'tokens' }" x-on:click="activeTab = 'tokens'">API Tokens</button>
+    </nav>
 
-  <h3>Password</h3>
-  {% if page.has_local_password %}
-    <form method="post" action="/account/password">
-      <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
-      <p><label>New password<br><input type="password" name="new_password" autocomplete="new-password" required></label></p>
-      <p><button type="submit">Change password</button></p>
-    </form>
-  {% else %}
-    <p>This account signs in through OIDC.</p>
-  {% endif %}
-
-  <h3>Two-factor authentication</h3>
-  {% if page.has_local_password %}
-    {% if page.two_factor_enabled %}
-      <p>Email-code two-factor authentication is enabled.</p>
-      <form method="post" action="/account/two-factor/disable">
-        <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
-        <p><button type="submit">Disable two-factor</button></p>
+    <div x-show="activeTab === 'items'">
+      <form method="get" action="/account" hx-get="/account" hx-target="#account-items" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, input changed delay:300ms" hx-indicator="#account-search-indicator" hx-disabled-elt="find button">
+        <p><label>Search your items<br><input name="q" value="{{ page.q }}" placeholder="filename, id, syntax"></label></p>
+        <p><button type="submit">Search</button>{% if page.q %} <a href="/account">Clear</a>{% endif %} <span id="account-search-indicator" class="htmx-indicator">Loading...</span></p>
       </form>
-    {% elif page.smtp_enabled and page.email_verified %}
-      <form method="post" action="/account/two-factor/enable">
-        <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
-        <p><button type="submit">Enable two-factor</button></p>
+
+      {% include "account_items.html" %}
+    </div>
+
+    <div x-show="activeTab === 'security'">
+      <h3>Email</h3>
+      <p>{{ current_user.email }} - {% if page.email_verified %}verified{% else %}not verified{% endif %}</p>
+      {% if not page.email_verified and page.smtp_enabled %}
+        <form method="post" action="/account/email-verification">
+          <p><button type="submit">Send verification email</button></p>
+        </form>
+      {% endif %}
+      {% if page.oidc_link_enabled %}
+        <p><a href="/account/oidc/link">Link OIDC sign-in</a></p>
+      {% endif %}
+
+      <h3>Password</h3>
+      {% if page.has_local_password %}
+        <form method="post" action="/account/password">
+          <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
+          <p><label>New password<br><input type="password" name="new_password" autocomplete="new-password" required></label></p>
+          <p><button type="submit">Change password</button></p>
+        </form>
+      {% else %}
+        <p>This account signs in through OIDC.</p>
+      {% endif %}
+
+      <h3>Two-factor authentication</h3>
+      {% if page.has_local_password %}
+        {% if page.two_factor_enabled %}
+          <p>Email-code two-factor authentication is enabled.</p>
+          <form method="post" action="/account/two-factor/disable">
+            <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
+            <p><button type="submit">Disable two-factor</button></p>
+          </form>
+        {% elif page.smtp_enabled and page.email_verified %}
+          <form method="post" action="/account/two-factor/enable">
+            <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
+            <p><button type="submit">Enable two-factor</button></p>
+          </form>
+        {% else %}
+          <p>Two-factor authentication requires SMTP and a verified email address.</p>
+        {% endif %}
+      {% else %}
+        <p>Two-factor authentication is only available for local-password accounts.</p>
+      {% endif %}
+
+      <h3>Account status</h3>
+      <form method="post" action="/account/deactivate" x-data x-on:submit="if (!confirm('Deactivate this account?')) $event.preventDefault()">
+        <p><button type="submit">Deactivate account</button></p>
       </form>
-    {% else %}
-      <p>Two-factor authentication requires SMTP and a verified email address.</p>
-    {% endif %}
-  {% else %}
-    <p>Two-factor authentication is only available for local-password accounts.</p>
-  {% endif %}
+    </div>
 
-  <h3>Account status</h3>
-  <form method="post" action="/account/deactivate" x-data x-on:submit="if (!confirm('Deactivate this account?')) $event.preventDefault()">
-    <p><button type="submit">Deactivate account</button></p>
-  </form>
-
-  <form method="get" action="/account" hx-get="/account" hx-target="#account-items" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, input changed delay:300ms" hx-indicator="#account-search-indicator" hx-disabled-elt="find button">
-    <p><label>Search your items<br><input name="q" value="{{ page.q }}" placeholder="filename, id, syntax"></label></p>
-    <p><button type="submit">Search</button>{% if page.q %} <a href="/account">Clear</a>{% endif %} <span id="account-search-indicator" class="htmx-indicator">Loading...</span></p>
-  </form>
-
-  {% include "account_items.html" %}
-  {% include "account_tokens.html" %}
+    <div x-show="activeTab === 'tokens'">
+      {% include "account_tokens.html" %}
+    </div>
+  </div>
 {% endblock %}
