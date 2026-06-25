@@ -13,12 +13,23 @@ COPY . .
 RUN cargo build --release --locked --bin midden
 
 FROM debian:trixie-slim
-RUN useradd --system --create-home --home-dir /var/lib/midden --shell /usr/sbin/nologin midden
+
+RUN groupadd --system --gid 10001 midden \
+ && useradd --system \
+      --uid 10001 \
+      --gid 10001 \
+      --create-home \
+      --home-dir /var/lib/midden \
+      --shell /usr/sbin/nologin \
+      midden
 
 WORKDIR /var/lib/midden
+
 COPY --from=build /app/target/release/midden /usr/local/bin/midden
 COPY --from=build /app/midden.example.toml /etc/midden.toml
 
-USER midden
+USER 10001:10001
+
 EXPOSE 8080
+
 CMD ["midden", "--config", "/etc/midden.toml", "serve"]
