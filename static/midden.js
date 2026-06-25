@@ -49,10 +49,22 @@
 
   document.body.addEventListener("htmx:beforeRequest", (event) => {
     setRequestBusy(event.detail && event.detail.elt, true);
+    const globalError = document.getElementById("global-error");
+    if (globalError) {
+      globalError.replaceChildren();
+    }
   });
 
   document.body.addEventListener("htmx:afterRequest", (event) => {
     setRequestBusy(event.detail && event.detail.elt, false);
+  });
+
+  document.body.addEventListener("htmx:beforeOnLoad", (event) => {
+    const xhr = event.detail.xhr;
+    if (xhr.status >= 400) {
+      event.detail.shouldSwap = true;
+      event.detail.target = document.getElementById("global-error") || event.detail.target;
+    }
   });
 
   document.body.addEventListener("htmx:afterSwap", (event) => {

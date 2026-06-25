@@ -29,11 +29,9 @@
     {% endif %}
   </section>
 
-  {% if settings.features.pastes or settings.features.upload_by_url %}
+  {% if settings.features.upload_by_url %}
     <section class="plain-section">
-      {% if settings.features.pastes %}<a href="/p/new">Create a paste</a>{% endif %}
-      {% if settings.features.pastes and settings.features.upload_by_url %} | {% endif %}
-      {% if settings.features.upload_by_url %}<a href="/url-upload">Upload via URL</a>{% endif %}
+      <a href="/url-upload">Upload via URL</a>
     </section>
   {% endif %}
 
