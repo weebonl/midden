@@ -148,6 +148,7 @@ pub struct FeatureConfig {
     pub preview_pages: bool,
     pub public_browse: bool,
     pub oidc_login: bool,
+    pub local_login: bool,
     pub paste_content_search: bool,
     pub paste_editing: bool,
 }
@@ -164,6 +165,7 @@ impl Default for FeatureConfig {
             preview_pages: false,
             public_browse: false,
             oidc_login: false,
+            local_login: true,
             paste_content_search: false,
             paste_editing: false,
         }

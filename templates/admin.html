@@ -31,6 +31,7 @@
     <p><label><input type="checkbox" name="feature_upload_by_url" x-model="featureUrlUpload" {% if settings.features.upload_by_url %}checked{% endif %}> URL upload</label></p>
     <p class="field-note" x-show="!featureUrlUpload" x-cloak>URL upload security settings are kept, but users cannot submit remote URLs while this is disabled.</p>
     <p><label><input type="checkbox" name="feature_oidc_login" {% if settings.features.oidc_login %}checked{% endif %}> OIDC login</label></p>
+    <p><label><input type="checkbox" name="feature_local_login" {% if settings.features.local_login %}checked{% endif %}> Local login</label></p>
     <p><label><input type="checkbox" name="feature_preview_pages" {% if settings.features.preview_pages %}checked{% endif %}> Preview pages</label></p>
     <p><label><input type="checkbox" name="feature_public_browse" {% if settings.features.public_browse %}checked{% endif %}> Public browse</label></p>
     <p><label><input type="checkbox" name="feature_paste_content_search" {% if settings.features.paste_content_search %}checked{% endif %}> Paste content search for owners</label></p>

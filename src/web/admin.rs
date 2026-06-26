@@ -438,6 +438,7 @@ pub(super) struct AdminSettingsForm {
     feature_preview_pages: Option<String>,
     feature_public_browse: Option<String>,
     feature_oidc_login: Option<String>,
+    feature_local_login: Option<String>,
     feature_paste_content_search: Option<String>,
     feature_paste_editing: Option<String>,
     max_upload_bytes: Option<String>,
@@ -576,6 +577,7 @@ pub(super) async fn admin_update_settings(
         preview_pages: form.feature_preview_pages.is_some(),
         public_browse: form.feature_public_browse.is_some(),
         oidc_login: form.feature_oidc_login.is_some(),
+        local_login: form.feature_local_login.is_some(),
         paste_content_search: form.feature_paste_content_search.is_some(),
         paste_editing: form.feature_paste_editing.is_some(),
     };
