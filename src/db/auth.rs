@@ -234,7 +234,7 @@ impl Database {
         &self,
         email: &str,
         username: &str,
-        password_hash: &str,
+        password_hash: Option<&str>,
     ) -> anyhow::Result<User> {
         self.query(
             "INSERT INTO users (id, email, username, password_hash, role, is_disabled, email_verified_at, two_factor_enabled, created_at)

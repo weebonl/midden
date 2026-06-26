@@ -315,7 +315,7 @@ mod tests {
     async fn owner_upsert_sets_owner_role() {
         let db = test_db().await;
         let user = db
-            .upsert_owner("root@example.test", "root", "hash")
+            .upsert_owner("root@example.test", "root", Some("hash"))
             .await
             .unwrap();
         assert_eq!(user.role, Role::Owner);

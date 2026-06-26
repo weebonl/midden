@@ -78,7 +78,7 @@ enum OwnerCommand {
         #[arg(long)]
         username: String,
         #[arg(long)]
-        password: String,
+        password: Option<String>,
     },
     ResetPassword {
         #[arg(long)]
@@ -162,15 +162,18 @@ async fn owner_command(config: AppConfig, command: OwnerCommand) -> anyhow::Resu
             username,
             password,
         } => {
-            let password_hash = util::hash_password(&password)?;
-            let user = db.upsert_owner(&email, &username, &password_hash).await?;
+            let password_hash = match password {
+                Some(p) => Some(util::hash_password(&p)?),
+                None => None,
+            };
+            let user = db.upsert_owner(&email, &username, password_hash.as_deref()).await?;
             println!("owner ready: {} ({})", user.username, user.email);
         }
         OwnerCommand::ResetPassword { email, password } => {
             let current = db.user_by_email(&email).await?;
             let password_hash = util::hash_password(&password)?;
             let user = db
-                .upsert_owner(&email, &current.username, &password_hash)
+                .upsert_owner(&email, &current.username, Some(&password_hash))
                 .await?;
             println!("owner password reset: {} ({})", user.username, user.email);
         }
