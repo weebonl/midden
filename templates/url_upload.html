@@ -2,13 +2,17 @@
 {% block title %}Upload URL | {{ settings.branding.instance_name }}{% endblock %}
 {% block content %}
   <h2>Upload via URL</h2>
-  <form method="post" action="/url-upload">
-    <p><label>URL<br><input type="url" name="url" required placeholder="https://example.test/file.txt"></label></p>
-    <p><label>Expire after, optional<br><input name="expires" list="expiry-presets" value="{{ settings.limits.default_file_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
-    {% if settings.features.public_browse %}
-      <p><label>Visibility<br><select name="visibility"><option value="unlisted">unlisted</option><option value="public">public browse</option></select></label></p>
-      <p class="field-note">Unlisted files require the link. Public browse lists the file on the browse page.</p>
-    {% endif %}
-    <p><button type="submit">Fetch and upload</button></p>
-  </form>
+  {% if settings.policy.upload_file != "anonymous" and settings.policy.upload_file != "disabled" and not current_user %}
+    <p class="notice">An account is required to upload files on this instance.</p>
+  {% else %}
+    <form method="post" action="/url-upload">
+      <p><label>URL<br><input type="url" name="url" required placeholder="https://example.test/file.txt"></label></p>
+      <p><label>Expire after, optional<br><input name="expires" list="expiry-presets" value="{{ settings.limits.default_file_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
+      {% if settings.features.public_browse %}
+        <p><label>Visibility<br><select name="visibility"><option value="unlisted">unlisted</option><option value="public">public browse</option></select></label></p>
+        <p class="field-note">Unlisted files require the link. Public browse lists the file on the browse page.</p>
+      {% endif %}
+      <p><button type="submit">Fetch and upload</button></p>
+    </form>
+  {% endif %}
 {% endblock %}
