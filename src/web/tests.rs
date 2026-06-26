@@ -1594,4 +1594,3 @@ async fn tus_uses_configured_temp_dir() {
     assert!(custom_temp.exists());
     let _ = tokio::fs::remove_dir_all(&custom_temp).await;
 }
-

@@ -49,7 +49,10 @@ pub(super) async fn tus_create(
     let visibility =
         requested_visibility(&settings, metadata.get("visibility").map(String::as_str))?;
     let temp_path = match &settings.uploads.temp_dir {
-        Some(dir) => dir.join(format!("{upload_id}.part")).to_string_lossy().into_owned(),
+        Some(dir) => dir
+            .join(format!("{upload_id}.part"))
+            .to_string_lossy()
+            .into_owned(),
         None => format!("data/uploads/{}.part", upload_id),
     };
     state
