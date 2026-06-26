@@ -126,6 +126,7 @@ async fn retry_scanners(state: &AppState, settings: &RuntimeSettings) -> anyhow:
                 content_type: file.content_type.as_deref(),
                 hash: &file.blob_hash,
                 public_id: &file.public_id,
+                temp_dir: settings.uploads.temp_dir.as_deref(),
             },
         )
         .await;

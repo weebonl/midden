@@ -25,7 +25,7 @@ pub(super) async fn upload_form_file(
     if !policy::can_upload_file(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
-    let form = read_upload_form(multipart, settings.limits.max_upload_bytes).await?;
+    let form = read_upload_form(&settings, multipart, settings.limits.max_upload_bytes).await?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     let result = persist_file_upload(
         &state,

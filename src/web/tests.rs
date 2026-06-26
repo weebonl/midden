@@ -1399,4 +1399,44 @@ async fn moderation_webhook_notifies_external_service() {
     assert!(request_str.contains("\"details\":\"webhook test\""));
 }
 
+#[tokio::test]
+async fn uploads_uses_configured_temp_dir() {
+    let issuer = spawn_oidc_provider(serde_json::json!({
+        "sub": "unused-temp-dir",
+        "email": "unused-temp-dir@example.test",
+        "groups": ["admins"]
+    }))
+    .await;
+    let state = test_state(issuer).await;
+    let base = spawn_http_app(state.clone()).await;
+    let client = reqwest::Client::new();
+
+    let custom_temp = std::env::temp_dir().join(format!("midden-custom-temp-{}", util::public_id()));
+    let mut settings = state.settings().await.unwrap();
+    settings.uploads.temp_dir = Some(custom_temp.clone());
+    state.db.set_json_setting("uploads", &settings.uploads).await.unwrap();
+
+    let _ = tokio::fs::remove_dir_all(&custom_temp).await;
+
+    let upload = client
+        .post(format!("{base}/api/v1/files"))
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(b"hello world".to_vec())
+                    .file_name("hello.txt")
+                    .mime_str("text/plain")
+                    .unwrap(),
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), StatusCode::OK);
+
+    assert!(custom_temp.exists());
+    let _ = tokio::fs::remove_dir_all(&custom_temp).await;
+}
+
+
 

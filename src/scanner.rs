@@ -35,6 +35,7 @@ pub struct ScanInput<'a> {
     pub content_type: Option<&'a str>,
     pub hash: &'a str,
     pub public_id: &'a str,
+    pub temp_dir: Option<&'a Path>,
 }
 
 pub async fn scan_upload(config: &ScanningConfig, input: ScanInput<'_>) -> ScanSummary {
@@ -76,8 +77,11 @@ async fn run_command_scanner(
     input: &ScanInput<'_>,
     default_on_error: ScanDecision,
 ) -> ScanReport {
-    let temp_path = scanner_temp_path(input.public_id);
+    let temp_path = scanner_temp_path(input.temp_dir, input.public_id);
     let result = async {
+        if let Some(parent) = temp_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
         tokio::fs::write(&temp_path, input.bytes).await?;
         let mut command = Command::new(program);
         for arg in args {
@@ -256,8 +260,9 @@ where
     Ok(String::from_utf8_lossy(&response).trim().to_string())
 }
 
-fn scanner_temp_path(public_id: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("midden-scan-{public_id}-{}", util::public_id()))
+fn scanner_temp_path(temp_dir: Option<&Path>, public_id: &str) -> PathBuf {
+    let base = temp_dir.map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir);
+    base.join(format!("midden-scan-{public_id}-{}", util::public_id()))
 }
 
 fn expand_arg(arg: &str, input: &ScanInput<'_>, path: &Path) -> String {
@@ -297,6 +302,7 @@ mod tests {
                 content_type: Some("text/plain"),
                 hash: "abc",
                 public_id: "id",
+                temp_dir: None,
             },
         )
         .await;

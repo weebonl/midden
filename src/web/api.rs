@@ -159,7 +159,7 @@ pub(super) async fn api_upload_file(
     if !settings.features.api || !policy::can_upload_file(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
-    let form = read_upload_form(multipart, settings.limits.max_upload_bytes).await?;
+    let form = read_upload_form(&settings, multipart, settings.limits.max_upload_bytes).await?;
     let result = persist_file_upload(
         &state,
         &settings,
