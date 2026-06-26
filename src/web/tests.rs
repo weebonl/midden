@@ -1594,3 +1594,78 @@ async fn tus_uses_configured_temp_dir() {
     assert!(custom_temp.exists());
     let _ = tokio::fs::remove_dir_all(&custom_temp).await;
 }
+
+#[tokio::test]
+async fn test_local_login_disabled_blocks_endpoints() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut settings = state.settings().await.unwrap();
+    settings.features.local_login = false;
+    state
+        .db
+        .set_json_setting("features", &settings.features)
+        .await
+        .unwrap();
+
+    let base = spawn_http_app(state).await;
+    let client = reqwest::Client::new();
+
+    // 1. POST /auth/login returns 403 Forbidden
+    let login_res = client
+        .post(format!("{base}/auth/login"))
+        .form(&[("email", "test@example.com"), ("password", "password")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_res.status(), StatusCode::FORBIDDEN);
+
+    // 2. GET /register returns 403 Forbidden
+    let reg_form_res = client
+        .get(format!("{base}/register"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reg_form_res.status(), StatusCode::FORBIDDEN);
+
+    // 3. POST /register returns 403 Forbidden
+    let reg_res = client
+        .post(format!("{base}/register"))
+        .form(&[("email", "test@example.com"), ("username", "test"), ("password", "password")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reg_res.status(), StatusCode::FORBIDDEN);
+
+    // 4. GET /auth/password-reset returns 403 Forbidden
+    let reset_req_form_res = client
+        .get(format!("{base}/auth/password-reset"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset_req_form_res.status(), StatusCode::FORBIDDEN);
+
+    // 5. POST /auth/password-reset returns 403 Forbidden
+    let reset_req_res = client
+        .post(format!("{base}/auth/password-reset"))
+        .form(&[("email", "test@example.com")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset_req_res.status(), StatusCode::FORBIDDEN);
+
+    // 6. GET /auth/password-reset/token returns 403 Forbidden
+    let reset_form_res = client
+        .get(format!("{base}/auth/password-reset/mock-token"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset_form_res.status(), StatusCode::FORBIDDEN);
+
+    // 7. POST /auth/password-reset/token returns 403 Forbidden
+    let reset_submit_res = client
+        .post(format!("{base}/auth/password-reset/mock-token"))
+        .form(&[("password", "new-password")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset_submit_res.status(), StatusCode::FORBIDDEN);
+}
