@@ -1438,5 +1438,77 @@ async fn uploads_uses_configured_temp_dir() {
     let _ = tokio::fs::remove_dir_all(&custom_temp).await;
 }
 
+#[tokio::test]
+async fn unauthenticated_upload_shows_notice() {
+    let issuer = spawn_oidc_provider(serde_json::json!({
+        "sub": "unused-notice-upload",
+        "email": "unused-notice-upload@example.test",
+        "groups": ["admins"]
+    }))
+    .await;
+    let state = test_state(issuer).await;
+    
+    // Set policy to require authenticated users for file uploads and enable upload_by_url
+    let mut settings = state.settings().await.unwrap();
+    settings.policy.upload_file = ActionRule::Authenticated;
+    settings.features.upload_by_url = true;
+    state.db.set_json_setting("policy", &settings.policy).await.unwrap();
+    state.db.set_json_setting("features", &settings.features).await.unwrap();
+
+    let router = state.router();
+    
+    // GET / (index page) should return OK but contain the notice and not the form help
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_body(response).await;
+    assert!(body.contains("An account is required to upload files on this instance."));
+    assert!(!body.contains("Choose a file, then keep this tab open"));
+
+    // GET /url-upload should return OK but contain the notice and not the fetch form
+    let response_url = router
+        .oneshot(Request::builder().uri("/url-upload").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response_url.status(), StatusCode::OK);
+    let body_url = response_body(response_url).await;
+    assert!(body_url.contains("An account is required to upload files on this instance."));
+    assert!(!body_url.contains("Fetch and upload"));
+}
+
+#[tokio::test]
+async fn unauthenticated_paste_shows_notice() {
+    let issuer = spawn_oidc_provider(serde_json::json!({
+        "sub": "unused-notice-paste",
+        "email": "unused-notice-paste@example.test",
+        "groups": ["admins"]
+    }))
+    .await;
+    let state = test_state(issuer).await;
+    
+    // Set policy to require authenticated users for paste creation
+    let mut policy = state.settings().await.unwrap().policy;
+    policy.create_paste = ActionRule::Authenticated;
+    state.db.set_json_setting("policy", &policy).await.unwrap();
+
+    let router = state.router();
+    
+    // GET /p/new should return OK (not FORBIDDEN) and contain the notice
+    let response = router
+        .oneshot(Request::builder().uri("/p/new").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_body(response).await;
+    assert!(body.contains("An account is required to create pastes on this instance."));
+    assert!(!body.contains("Create paste"));
+}
+
 
 
