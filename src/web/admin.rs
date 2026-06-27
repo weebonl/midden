@@ -584,6 +584,13 @@ pub(super) async fn admin_update_settings(
         paste_content_search: form.feature_paste_content_search.is_some(),
         paste_editing: form.feature_paste_editing.is_some(),
     };
+    let mut candidate_settings = settings.clone();
+    candidate_settings.features = features.clone();
+    if !candidate_settings.features.local_login && !oidc::enabled(&state, &candidate_settings) {
+        return Err(AppError::BadRequest(
+            "at least one sign-in method must remain enabled".to_string(),
+        ));
+    }
     let mut limits = settings.limits.clone();
     limits.max_upload_bytes =
         parse_required_i64("max_upload_bytes", form.max_upload_bytes.as_deref())?;

@@ -37,7 +37,7 @@
         <form class="inline" method="post" action="/auth/logout"><button type="submit" class="link-button">Logout</button></form>
       {% else %}
         <a href="/auth/login">Log in</a>
-        {% if settings.policy.signup == "open" %}<a href="/register">Register</a>{% endif %}
+        {% if settings.features.local_login and settings.policy.signup == "open" %}<a href="/register">Register</a>{% endif %}
       {% endif %}
     </nav>
 

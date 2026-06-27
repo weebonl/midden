@@ -242,6 +242,50 @@ async fn admin_session_state() -> (AppState, String) {
     (state, session_token)
 }
 
+fn admin_settings_form_body(csrf: &str, oidc_login: bool, local_login: bool) -> String {
+    let mut fields = vec![
+        ("feature_files", "on"),
+        ("feature_pastes", "on"),
+        ("feature_accounts", "on"),
+        ("feature_api", "on"),
+        ("feature_reports", "on"),
+        ("max_upload_bytes", "2147483648"),
+        ("max_paste_bytes", "1048576"),
+        ("signup", "open"),
+        ("policy_upload_file", "anonymous"),
+        ("policy_create_paste", "anonymous"),
+        ("policy_use_api", "anonymous"),
+        ("policy_view_item", "anonymous"),
+        ("policy_delete_own_item", "owner"),
+        ("policy_claim_anonymous_item", "authenticated"),
+        ("policy_create_account", "anonymous"),
+        ("delete_policy", "delete_tokens"),
+        ("content_disposition", "attachment"),
+        ("risky_mime_mode", "attachment"),
+        ("metrics_access", "public"),
+        ("rate_limit_backend", "memory"),
+        ("default_on_error", "allow"),
+        ("instance_name", "Midden"),
+        ("tagline", ""),
+        ("accent_color", "#4f46e5"),
+        ("dark_mode", "auto"),
+        ("opengraph_description", ""),
+        ("takedown_page_text", ""),
+        ("csrf_token", csrf),
+    ];
+    if oidc_login {
+        fields.push(("feature_oidc_login", "on"));
+    }
+    if local_login {
+        fields.push(("feature_local_login", "on"));
+    }
+    fields
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 #[tokio::test]
 async fn admin_ui_exposes_wide_shell_and_settings_affordances() {
     let (state, session_token) = admin_session_state().await;
@@ -268,6 +312,80 @@ async fn admin_ui_exposes_wide_shell_and_settings_affordances() {
     assert!(body.contains("data-secret-input"));
     assert!(body.contains("data-accent-preview"));
     assert!(body.contains("x-cloak"));
+}
+
+#[tokio::test]
+async fn public_ui_hides_local_auth_links_when_local_login_disabled() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut settings = state.settings().await.unwrap();
+    settings.features.local_login = false;
+    settings.policy.signup = crate::config::SignupMode::Open;
+    state
+        .db
+        .set_json_setting("features", &settings.features)
+        .await
+        .unwrap();
+    state
+        .db
+        .set_json_setting("policy", &settings.policy)
+        .await
+        .unwrap();
+    let router = state.router();
+
+    let home_response = router
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(home_response.status(), StatusCode::OK);
+    let home = response_body(home_response).await;
+    assert!(!home.contains("href=\"/register\""));
+
+    let login_response = router
+        .oneshot(
+            Request::builder()
+                .uri("/auth/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_response.status(), StatusCode::OK);
+    let login = response_body(login_response).await;
+    assert!(!login.contains("action=\"/auth/login\""));
+    assert!(!login.contains("href=\"/auth/password-reset\""));
+    assert!(!login.contains("href=\"/register\""));
+    assert!(login.contains("href=\"/auth/oidc/login\""));
+}
+
+#[tokio::test]
+async fn admin_settings_rejects_disabling_all_sign_in_paths() {
+    let (state, session_token) = admin_session_state().await;
+    let csrf = util::secret_token();
+    let response = state
+        .clone()
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/settings")
+                .header(
+                    header::COOKIE,
+                    format!("midden_session={session_token}; midden_csrf={csrf}"),
+                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(admin_settings_form_body(&csrf, false, false)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_body(response).await;
+    assert!(body.contains("at least one sign-in method"));
+    let settings = state.settings().await.unwrap();
+    assert!(settings.features.local_login);
+    assert!(settings.features.oidc_login);
 }
 
 #[tokio::test]
