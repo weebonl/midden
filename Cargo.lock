@@ -1847,7 +1847,7 @@ checksum = "38d1115007560874e373613744c6fba374c17688327a71c1476d1a5954cc857b"
 
 [[package]]
 name = "midden"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "argon2",
