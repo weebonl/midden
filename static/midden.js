@@ -189,8 +189,6 @@
   const uploadButton = uploadForm.querySelector("button[type=submit]");
   const uploadCancel = uploadForm.querySelector("[data-upload-cancel]");
   const uploadResume = uploadForm.querySelector("[data-upload-resume]");
-  const configuredChunkSize = Number(uploadForm.getAttribute("data-upload-chunk-bytes") || "");
-  const chunkSize = Number.isFinite(configuredChunkSize) && configuredChunkSize > 0 ? configuredChunkSize : 1024 * 1024;
   let uploadAbortController = null;
 
   function formatFileSize(bytes) {
@@ -290,134 +288,70 @@
     return btoa(unescape(encodeURIComponent(value)));
   }
 
-  function uploadKey(file) {
-    return "midden:tus:" + [file.name, file.size, file.lastModified].join(":");
-  }
-
-  function storedLocation(file) {
-    try {
-      return window.localStorage.getItem(uploadKey(file));
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function rememberLocation(file, location) {
-    try {
-      window.localStorage.setItem(uploadKey(file), location);
-    } catch (_) {}
-  }
-
-  function forgetLocation(file) {
-    try {
-      window.localStorage.removeItem(uploadKey(file));
-    } catch (_) {}
-  }
-
-  async function createTusUpload(file, expires, signal) {
-    const metadata = [
-      "filename " + metadataValue(file.name || "upload.bin"),
-      "content-type " + metadataValue(file.type || "application/octet-stream"),
-    ];
-    if (expires) metadata.push("expires " + metadataValue(expires));
-    const visibility = uploadForm.querySelector("select[name=visibility]")?.value;
-    if (visibility) metadata.push("visibility " + metadataValue(visibility));
-    const headers = {
-      "Tus-Resumable": "1.0.0",
-      "Upload-Length": String(file.size),
-      "Upload-Metadata": metadata.join(","),
-    };
-    const csrf = readCookie(csrfCookie);
-    if (csrf) headers["X-CSRF-Token"] = decodeURIComponent(csrf);
-    const response = await fetch("/tus", {
-      method: "POST",
-      headers,
-      signal,
-    });
-    if (!response.ok) throw new Error("Upload creation failed (" + response.status + ")");
-    return new URL(response.headers.get("location"), window.location.origin).toString();
-  }
-
-  async function currentTusOffset(location, signal) {
-    const response = await fetch(location, {
-      method: "HEAD",
-      headers: { "Tus-Resumable": "1.0.0" },
-      signal,
-    });
-    if (!response.ok) throw new Error("Upload resume failed (" + response.status + ")");
-    return Number(response.headers.get("upload-offset") || "0");
-  }
-
-  async function sendTusChunk(location, file, offset, signal) {
-    const chunk = file.slice(offset, Math.min(file.size, offset + chunkSize));
-    const response = await fetch(location, {
-      method: "PATCH",
-      headers: {
-        "Tus-Resumable": "1.0.0",
-        "Upload-Offset": String(offset),
-        "Content-Type": "application/offset+octet-stream",
-      },
-      body: chunk,
-      signal,
-    });
-    if (!response.ok) throw new Error("Upload chunk failed (" + response.status + ")");
-    return {
-      offset: Number(response.headers.get("upload-offset") || String(offset + chunk.size)),
-      finalUrl: absoluteUrl(response.headers.get("location")),
-      rawUrl: absoluteUrl(response.headers.get("x-midden-raw-url")),
-      deleteUrl: absoluteUrl(response.headers.get("x-midden-delete-url")),
-      deleteToken: response.headers.get("x-midden-delete-token"),
-    };
-  }
-
-  uploadForm.addEventListener("submit", async (event) => {
+  uploadForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const file = uploadInput && uploadInput.files ? uploadInput.files[0] : null;
     if (!file) return;
-    const expires = uploadForm.querySelector("input[name=expires]")?.value.trim();
+
+    const formData = new FormData(uploadForm);
     uploadAbortController = new AbortController();
+
     if (uploadButton) uploadButton.disabled = true;
     if (uploadCancel) uploadCancel.hidden = false;
     if (uploadProgress) {
       uploadProgress.hidden = false;
       uploadProgress.value = 0;
     }
-    try {
-      let location = storedLocation(file);
-      if (!location) {
-        location = await createTusUpload(file, expires, uploadAbortController.signal);
-        rememberLocation(file, location);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/");
+    xhr.setRequestHeader("Accept", "application/json");
+
+    // Track upload progress
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable && uploadProgress) {
+        uploadProgress.value = Math.round((e.loaded / e.total) * 100);
       }
-      let offset = await currentTusOffset(location, uploadAbortController.signal).catch(async () => {
-        const fresh = await createTusUpload(file, expires, uploadAbortController.signal);
-        rememberLocation(file, fresh);
-        location = fresh;
-        return 0;
-      });
-      while (offset < file.size) {
-        const result = await sendTusChunk(location, file, offset, uploadAbortController.signal);
-        offset = result.offset;
-        if (uploadProgress) uploadProgress.value = Math.round((offset / file.size) * 100);
-        if (result.finalUrl) {
-          forgetLocation(file);
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const result = JSON.parse(xhr.responseText);
+          if (uploadProgress) uploadProgress.value = 100;
           setUploadCompleteStatus(result);
+        } catch (err) {
+          setUploadStatus("Failed to parse server response", true);
         }
-      }
-      forgetLocation(file);
-      if (uploadProgress) uploadProgress.value = 100;
-      if (!uploadStatus || uploadStatus.hidden) setUploadStatus("Upload complete", false);
-    } catch (error) {
-      if (error && error.name === "AbortError") {
-        setUploadStatus("Upload canceled. Start again to resume from this browser.", true);
       } else {
-        setUploadStatus(error.message || "Upload failed", true);
+        setUploadStatus("Upload failed (" + xhr.status + ")", true);
       }
-    } finally {
+      cleanup();
+    });
+
+    xhr.addEventListener("error", () => {
+      setUploadStatus("Upload failed", true);
+      cleanup();
+    });
+
+    xhr.addEventListener("abort", () => {
+      setUploadStatus("Upload canceled.", true);
+      cleanup();
+    });
+
+    // Handle cancellation
+    uploadAbortController.signal.addEventListener("abort", () => {
+      xhr.abort();
+    });
+
+    function cleanup() {
       if (uploadButton) uploadButton.disabled = false;
       if (uploadCancel) uploadCancel.hidden = true;
       uploadAbortController = null;
       updateSelectedFile();
     }
+
+    xhr.send(formData);
   });
 
   if (uploadCancel) {

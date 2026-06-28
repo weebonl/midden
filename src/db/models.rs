@@ -1,17 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-#[derive(Debug, Clone, Copy)]
-pub struct NewUploadSession<'a> {
-    pub upload_id: &'a str,
-    pub filename: Option<&'a str>,
-    pub content_type: Option<&'a str>,
-    pub total_bytes: i64,
-    pub owner_user_id: Option<&'a str>,
-    pub expires_at: Option<i64>,
-    pub visibility: &'a str,
-    pub temp_path: &'a str,
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -346,22 +335,6 @@ impl ModerationNote {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct UploadSession {
-    pub id: String,
-    pub filename: Option<String>,
-    pub content_type: Option<String>,
-    pub total_bytes: i64,
-    pub received_bytes: i64,
-    pub owner_user_id: Option<String>,
-    pub temp_path: String,
-    pub state: String,
-    pub expires_at: Option<i64>,
-    pub visibility: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct FileUsage {
@@ -371,21 +344,3 @@ pub struct FileUsage {
     pub item_count: i64,
 }
 
-impl UploadSession {
-    pub(super) fn from_row(row: &sqlx::any::AnyRow) -> anyhow::Result<Self> {
-        Ok(Self {
-            id: row.try_get("id")?,
-            filename: row.try_get("filename")?,
-            content_type: row.try_get("content_type")?,
-            total_bytes: row.try_get("total_bytes")?,
-            received_bytes: row.try_get("received_bytes")?,
-            owner_user_id: row.try_get("owner_user_id")?,
-            temp_path: row.try_get("temp_path")?,
-            state: row.try_get("state")?,
-            expires_at: row.try_get("expires_at")?,
-            visibility: row.try_get("visibility")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-        })
-    }
-}

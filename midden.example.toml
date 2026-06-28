@@ -139,9 +139,6 @@ page_size = 50
 
 [uploads]
 # temp_dir = "/var/lib/midden/tmp"
-chunk_bytes = 1048576
-max_chunk_bytes = 8388608
-upload_session_ttl_seconds = 86400
 
 [metrics]
 enabled = true
@@ -178,8 +175,7 @@ blocked_hosts = []
 # Rate limits are disabled unless an action entry is present and enabled.
 # Common action names: upload_file, upload_by_url, create_paste, login, report,
 # api_upload_file, api_create_paste, api_delete_file, api_delete_paste,
-# api_create_token, api_create_report, api_list_files, api_list_pastes,
-# tus_create, tus_patch.
+# api_create_token, api_create_report, api_list_files, api_list_pastes.
 #
 # [security.rate_limits.upload_file]
 # enabled = true
@@ -199,11 +195,6 @@ blocked_hosts = []
 # [security.rate_limits.report]
 # enabled = true
 # requests = 10
-# window_seconds = 3600
-#
-# [security.rate_limits.tus_create]
-# enabled = true
-# requests = 20
 # window_seconds = 3600
 
 [smtp]

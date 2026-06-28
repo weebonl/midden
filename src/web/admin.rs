@@ -496,9 +496,6 @@ pub(super) struct AdminSettingsForm {
     jobs_scanner_retry_limit: Option<String>,
     jobs_storage_verify_interval_seconds: Option<String>,
     upload_temp_dir: Option<String>,
-    upload_chunk_bytes: Option<String>,
-    upload_max_chunk_bytes: Option<String>,
-    upload_session_ttl_seconds: Option<String>,
     metrics_enabled: Option<String>,
     metrics_access: String,
     metrics_bearer_token: Option<String>,
@@ -544,9 +541,6 @@ pub(super) struct AdminSettingsForm {
     rl_report_enabled: Option<String>,
     rl_report_requests: Option<String>,
     rl_report_window: Option<String>,
-    rl_tus_create_enabled: Option<String>,
-    rl_tus_create_requests: Option<String>,
-    rl_tus_create_window: Option<String>,
     scanning_enabled: Option<String>,
     blocked_hashes: Option<String>,
     blocked_mime_types: Option<String>,
@@ -713,13 +707,6 @@ pub(super) async fn admin_update_settings(
         form.rl_report_requests.as_deref(),
         form.rl_report_window.as_deref(),
     )?;
-    apply_rate_limit_form(
-        &mut security.rate_limits,
-        "tus_create",
-        form.rl_tus_create_enabled.is_some(),
-        form.rl_tus_create_requests.as_deref(),
-        form.rl_tus_create_window.as_deref(),
-    )?;
 
     let mut delivery = settings.delivery.clone();
     delivery.public_cache_seconds =
@@ -783,16 +770,6 @@ pub(super) async fn admin_update_settings(
 
     let mut uploads = settings.uploads.clone();
     uploads.temp_dir = nonempty(form.upload_temp_dir.as_deref()).map(PathBuf::from);
-    uploads.chunk_bytes = parse_optional_usize(form.upload_chunk_bytes.as_deref())?
-        .unwrap_or(uploads.chunk_bytes)
-        .max(1);
-    uploads.max_chunk_bytes = parse_optional_usize(form.upload_max_chunk_bytes.as_deref())?
-        .unwrap_or(uploads.max_chunk_bytes)
-        .max(uploads.chunk_bytes);
-    uploads.upload_session_ttl_seconds =
-        parse_optional_i64(form.upload_session_ttl_seconds.as_deref())?
-            .unwrap_or(uploads.upload_session_ttl_seconds)
-            .max(60);
 
     let mut metrics = settings.metrics.clone();
     metrics.enabled = form.metrics_enabled.is_some();

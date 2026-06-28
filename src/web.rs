@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{delete, get, options, patch, post},
+    routing::{delete, get, patch, post},
 };
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -26,7 +26,7 @@ use crate::{
         PolicyConfig, RateLimitBackend, RateLimitConfig, RiskyMimeMode, RuntimeSettings,
         ScanDecision, ScannerAdapterConfig, SignupMode,
     },
-    db::{FileItem, NewFileItem, NewPaste, NewUploadSession, Paste, Role, User},
+    db::{FileItem, NewFileItem, NewPaste, Paste, Role, User},
     policy, processing, quota,
     scanner::{self, ScanInput},
     util,
@@ -43,7 +43,6 @@ mod oidc;
 mod pastes;
 mod support;
 mod system;
-mod tus;
 mod upload;
 
 use account::*;
@@ -56,7 +55,6 @@ use items::*;
 use pastes::*;
 use support::*;
 use system::*;
-use tus::*;
 use upload::*;
 
 #[cfg(test)]
@@ -208,11 +206,6 @@ pub fn router(state: AppState) -> Router {
             "/admin/items/{kind}/{id}",
             get(admin_item).post(admin_update_item),
         )
-        .route("/tus", options(tus_options).post(tus_create))
-        .route(
-            "/tus/{id}",
-            options(tus_options).head(tus_head).patch(tus_patch),
-        )
         .route("/{slug}", get(file_slug))
         .layer(CompressionLayer::new())
         .layer(middleware::from_fn(api_error_middleware))
@@ -271,7 +264,6 @@ fn is_public_file_path(path: &str) -> bool {
                 | "readyz"
                 | "register"
                 | "robots.txt"
-                | "tus"
                 | "url-upload"
         )
     {

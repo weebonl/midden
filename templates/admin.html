@@ -180,9 +180,6 @@
     <details class="settings-section" data-settings-section="uploads" x-show="activeTab === 'storage'" open>
       <summary>Uploads</summary>
     <p><label>Temporary directory<br><input name="upload_temp_dir" value="{{ settings.uploads.temp_dir or "" }}"></label></p>
-    <p><label>Browser chunk bytes<br><input type="number" min="1" name="upload_chunk_bytes" value="{{ settings.uploads.chunk_bytes }}"></label></p>
-    <p><label>Max server chunk bytes<br><input type="number" min="1" name="upload_max_chunk_bytes" value="{{ settings.uploads.max_chunk_bytes }}"></label></p>
-    <p><label>Upload session TTL seconds<br><input type="number" min="60" name="upload_session_ttl_seconds" value="{{ settings.uploads.upload_session_ttl_seconds }}"></label></p>
     </details>
 
     <details class="settings-section" data-settings-section="metrics" x-show="activeTab === 'system'" open>
@@ -227,8 +224,7 @@
         ("upload_by_url", "URL upload", "rl_upload_by_url", settings.security.rate_limits.upload_by_url | default({})),
         ("login", "Login", "rl_login", settings.security.rate_limits.login | default({})),
         ("password_reset", "Password reset", "rl_password_reset", settings.security.rate_limits.password_reset | default({})),
-        ("report", "Report", "rl_report", settings.security.rate_limits.report | default({})),
-        ("tus_create", "Tus create", "rl_tus_create", settings.security.rate_limits.tus_create | default({}))
+        ("report", "Report", "rl_report", settings.security.rate_limits.report | default({}))
       ] %}
         <tr>
           <td data-label="Action">{{ row.1 }}</td>

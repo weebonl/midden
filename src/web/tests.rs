@@ -125,14 +125,7 @@ fn hex_fixture(input: &str) -> Vec<u8> {
         .collect()
 }
 
-fn tus_metadata(filename: &str, content_type: &str) -> String {
-    let engine = &base64::engine::general_purpose::STANDARD;
-    format!(
-        "filename {},content-type {}",
-        base64::Engine::encode(engine, filename),
-        base64::Engine::encode(engine, content_type)
-    )
-}
+
 
 fn csrf_cookie_from(headers: &reqwest::header::HeaderMap) -> String {
     headers
@@ -538,7 +531,6 @@ async fn admin_settings_renders_operator_controls() {
     let body = response_body(response).await;
     assert!(body.contains("View access"));
     assert!(body.contains("name=\"expiry_allow_never\""));
-    assert!(body.contains("name=\"upload_session_ttl_seconds\""));
     assert!(body.contains("name=\"metrics_access\""));
     assert!(body.contains("name=\"rate_limit_backend\""));
     assert!(body.contains("name=\"url_request_timeout_seconds\""));
@@ -959,18 +951,12 @@ async fn operational_controls_cover_upload_mime_metrics_and_rate_limits() {
     .await;
     let state = test_state(issuer).await;
     let mut settings = state.settings().await.unwrap();
-    settings.uploads.max_chunk_bytes = 4;
     settings.metrics.access = crate::config::MetricsAccessMode::Admin;
     settings
         .security
         .content_policy
         .forced_attachment_mime_types = vec!["text/plain".to_string()];
     settings.security.rate_limit_backend = crate::config::RateLimitBackend::Database;
-    state
-        .db
-        .set_json_setting("uploads", &settings.uploads)
-        .await
-        .unwrap();
     state
         .db
         .set_json_setting("metrics", &settings.metrics)
@@ -984,26 +970,6 @@ async fn operational_controls_cover_upload_mime_metrics_and_rate_limits() {
 
     let base = spawn_http_app(state.clone()).await;
     let client = reqwest::Client::new();
-
-    let create = client
-        .post(format!("{base}/tus"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", "8")
-        .header("Upload-Metadata", tus_metadata("chunk.txt", "text/plain"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::CREATED);
-    let location = create.headers()["location"].to_str().unwrap();
-    let too_large_chunk = client
-        .patch(format!("{base}{location}"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Offset", "0")
-        .body("12345")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(too_large_chunk.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     assert_eq!(
         client
@@ -1340,170 +1306,6 @@ async fn account_token_jobs_and_thumbnail_surfaces_are_available() {
     );
 }
 
-#[tokio::test]
-async fn tus_http_flow_covers_offsets_completion_ownership_and_policy() {
-    let issuer = spawn_oidc_provider(serde_json::json!({
-        "sub": "unused-tus",
-        "email": "unused-tus@example.test",
-        "groups": ["admins"]
-    }))
-    .await;
-    let state = test_state(issuer).await;
-    let base = spawn_http_app(state.clone()).await;
-    let client = reqwest::Client::new();
-    let payload = hex_fixture(include_str!("../../tests/fixtures/sample.gif.hex"));
-
-    let options = client
-        .request(reqwest::Method::OPTIONS, format!("{base}/tus"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(options.status(), StatusCode::NO_CONTENT);
-    assert_eq!(
-        options.headers()["tus-max-size"].to_str().unwrap(),
-        state
-            .settings()
-            .await
-            .unwrap()
-            .limits
-            .max_upload_bytes
-            .to_string()
-    );
-
-    let create = client
-        .post(format!("{base}/tus"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", payload.len().to_string())
-        .header("Upload-Metadata", tus_metadata("sample.gif", "image/gif"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::CREATED);
-    let location = create.headers()["location"].to_str().unwrap().to_string();
-
-    let head = client
-        .head(format!("{base}{location}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(head.status(), StatusCode::NO_CONTENT);
-    assert_eq!(head.headers()["upload-offset"].to_str().unwrap(), "0");
-
-    let mismatch = client
-        .patch(format!("{base}{location}"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Offset", "1")
-        .body(payload.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(mismatch.status(), StatusCode::BAD_REQUEST);
-
-    let complete = client
-        .patch(format!("{base}{location}"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Offset", "0")
-        .body(payload)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(complete.status(), StatusCode::NO_CONTENT);
-    assert!(complete.headers().contains_key("location"));
-    assert!(complete.headers().contains_key("x-midden-raw-url"));
-    assert!(complete.headers().contains_key("x-midden-delete-url"));
-    assert!(complete.headers().contains_key("x-midden-delete-token"));
-
-    let mut limits = state.settings().await.unwrap().limits;
-    let original_max_upload_bytes = limits.max_upload_bytes;
-    limits.max_upload_bytes = 1;
-    state.db.set_json_setting("limits", &limits).await.unwrap();
-    let too_large = client
-        .post(format!("{base}/tus"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", "2")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    limits.max_upload_bytes = original_max_upload_bytes;
-    state.db.set_json_setting("limits", &limits).await.unwrap();
-
-    let (owner, _) = user_with_api_token(
-        &state,
-        "tus-owner@example.test",
-        "tus-owner",
-        Role::User,
-        &["files:read"],
-    )
-    .await;
-    let session_token = util::secret_token();
-    state
-        .db
-        .create_session(
-            &owner.id,
-            &util::hash_token(&session_token),
-            util::now_ts() + 60,
-        )
-        .await
-        .unwrap();
-    let cookie = format!("midden_session={session_token}");
-    let owned = client
-        .post(format!("{base}/tus"))
-        .header("cookie", &cookie)
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", "4")
-        .header(
-            "Upload-Metadata",
-            tus_metadata("owned.bin", "application/octet-stream"),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(owned.status(), StatusCode::CREATED);
-    let owned_location = owned.headers()["location"].to_str().unwrap();
-    assert_eq!(
-        client
-            .head(format!("{base}{owned_location}"))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        client
-            .head(format!("{base}{owned_location}"))
-            .header("cookie", &cookie)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::NO_CONTENT
-    );
-
-    let mut policy = state.settings().await.unwrap().policy;
-    policy.use_api = ActionRule::Disabled;
-    state.db.set_json_setting("policy", &policy).await.unwrap();
-    let api_disabled = client
-        .post(format!("{base}/tus"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", "1")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(api_disabled.status(), StatusCode::CREATED);
-
-    policy.upload_file = ActionRule::Disabled;
-    state.db.set_json_setting("policy", &policy).await.unwrap();
-    let denied = client
-        .post(format!("{base}/tus"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", "1")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-}
 
 #[tokio::test]
 async fn public_browse_only_lists_items_marked_public() {
@@ -1946,59 +1748,6 @@ async fn unauthenticated_paste_shows_notice() {
     assert!(!body.contains("Create paste"));
 }
 
-#[tokio::test]
-async fn tus_uses_configured_temp_dir() {
-    let issuer = spawn_oidc_provider(serde_json::json!({
-        "sub": "unused-tus-temp-dir",
-        "email": "unused-tus-temp-dir@example.test",
-        "groups": ["admins"]
-    }))
-    .await;
-    let state = test_state(issuer).await;
-    let custom_temp =
-        std::env::temp_dir().join(format!("midden-custom-tus-temp-{}", util::public_id()));
-    let mut settings = state.settings().await.unwrap();
-    settings.uploads.temp_dir = Some(custom_temp.clone());
-    state
-        .db
-        .set_json_setting("uploads", &settings.uploads)
-        .await
-        .unwrap();
-
-    let _ = tokio::fs::remove_dir_all(&custom_temp).await;
-
-    let base = spawn_http_app(state.clone()).await;
-    let client = reqwest::Client::new();
-    let payload = b"tus custom temp".to_vec();
-
-    let create = client
-        .post(format!("{base}/tus"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", payload.len().to_string())
-        .header(
-            "Upload-Metadata",
-            tus_metadata("tus-custom.txt", "text/plain"),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::CREATED);
-    let location = create.headers()["location"].to_str().unwrap().to_string();
-
-    let patch = client
-        .patch(format!("{base}{location}"))
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Offset", "0")
-        .body(payload.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(patch.status(), StatusCode::NO_CONTENT);
-
-    // Verify custom temp directory exists and contains files
-    assert!(custom_temp.exists());
-    let _ = tokio::fs::remove_dir_all(&custom_temp).await;
-}
 
 #[tokio::test]
 async fn test_local_login_disabled_blocks_endpoints() {

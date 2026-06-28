@@ -663,18 +663,12 @@ impl Default for JobsConfig {
 #[serde(default)]
 pub struct UploadsConfig {
     pub temp_dir: Option<PathBuf>,
-    pub chunk_bytes: usize,
-    pub max_chunk_bytes: usize,
-    pub upload_session_ttl_seconds: i64,
 }
 
 impl Default for UploadsConfig {
     fn default() -> Self {
         Self {
             temp_dir: None,
-            chunk_bytes: 1024 * 1024,
-            max_chunk_bytes: 8 * 1024 * 1024,
-            upload_session_ttl_seconds: 24 * 60 * 60,
         }
     }
 }

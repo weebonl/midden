@@ -550,4 +550,40 @@ impl Database {
         }
         Ok(None)
     }
+
+    pub async fn cleanup_expired_auth_state(&self) -> anyhow::Result<u64> {
+        let now = util::now_ts();
+        let mut deleted = 0;
+        deleted += self
+            .query("DELETE FROM sessions WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        deleted += self
+            .query("DELETE FROM password_reset_tokens WHERE expires_at <= ? OR used_at IS NOT NULL")
+            .bind(now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        deleted += self
+            .query("DELETE FROM email_verification_tokens WHERE expires_at <= ? OR used_at IS NOT NULL")
+            .bind(now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        deleted += self
+            .query("DELETE FROM two_factor_challenges WHERE expires_at <= ? OR used_at IS NOT NULL")
+            .bind(now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        deleted += self
+            .query("DELETE FROM invite_tokens WHERE used_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(deleted)
+    }
 }

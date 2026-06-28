@@ -14,7 +14,6 @@ use crate::{
 pub struct JobSummary {
     pub expired_files: u64,
     pub expired_pastes: u64,
-    pub expired_upload_sessions: u64,
     pub expired_auth_rows: u64,
     pub deleted_blobs: u64,
     pub deleted_temp_files: u64,
@@ -93,14 +92,6 @@ pub async fn cleanup_expired(state: &AppState) -> anyhow::Result<JobSummary> {
 
     summary.expired_pastes = state.db.expire_due_pastes().await?;
 
-    let expired_upload_sessions = state.db.expired_upload_sessions().await?;
-    summary.expired_upload_sessions = expired_upload_sessions.len() as u64;
-    for session in expired_upload_sessions {
-        if tokio::fs::remove_file(&session.temp_path).await.is_ok() {
-            summary.deleted_temp_files += 1;
-        }
-        state.db.delete_upload_session(&session.id).await?;
-    }
 
     summary.expired_auth_rows = state.db.cleanup_expired_auth_state().await?;
     Ok(summary)

@@ -147,20 +147,6 @@ CREATE TABLE IF NOT EXISTS reports (
   state TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS upload_sessions (
-  id TEXT PRIMARY KEY,
-  filename TEXT,
-  content_type TEXT,
-  total_bytes INTEGER NOT NULL,
-  received_bytes INTEGER NOT NULL,
-  owner_user_id TEXT,
-  temp_path TEXT NOT NULL,
-  state TEXT NOT NULL,
-  expires_at INTEGER,
-  visibility TEXT NOT NULL DEFAULT 'unlisted',
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS scanner_results (
   id TEXT PRIMARY KEY,
   item_kind TEXT NOT NULL,

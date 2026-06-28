@@ -20,7 +20,6 @@ mod moderation;
 mod schema;
 mod search;
 mod settings;
-mod upload_sessions;
 
 pub use models::*;
 use schema::SCHEMA;
@@ -104,13 +103,7 @@ impl Database {
             .await?;
         self.add_column_if_missing("pastes", "visibility TEXT NOT NULL DEFAULT 'unlisted'")
             .await?;
-        self.add_column_if_missing("upload_sessions", "expires_at INTEGER")
-            .await?;
-        self.add_column_if_missing(
-            "upload_sessions",
-            "visibility TEXT NOT NULL DEFAULT 'unlisted'",
-        )
-        .await?;
+
         Ok(())
     }
 
@@ -280,8 +273,6 @@ mod tests {
             crate::config::MetricsAccessMode::Public
         );
         assert!(settings.metrics.enabled);
-        assert!(settings.uploads.upload_session_ttl_seconds > 0);
-        assert!(settings.uploads.max_chunk_bytes > 0);
         assert!(
             settings
                 .limits

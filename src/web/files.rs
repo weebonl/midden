@@ -42,13 +42,27 @@ pub(super) async fn upload_form_file(
         requested_visibility(&settings, form.visibility.as_deref())?,
     )
     .await?;
-    let page = serde_json::json!({
-        "url": result.url,
-        "raw_url": result.raw_url,
-        "delete_token": result.delete_token,
-        "file": result.file,
-    });
-    Ok(render(&state, "upload_result.html", &settings, user.as_ref(), page)?.into_response())
+    let wants_json = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("application/json"));
+    if wants_json {
+        Ok(axum::Json(serde_json::json!({
+            "finalUrl": result.url,
+            "rawUrl": result.raw_url,
+            "deleteUrl": format!("/delete/file/{}", result.file.public_id),
+            "deleteToken": result.delete_token
+        }))
+        .into_response())
+    } else {
+        let page = serde_json::json!({
+            "url": result.url,
+            "raw_url": result.raw_url,
+            "delete_token": result.delete_token,
+            "file": result.file,
+        });
+        Ok(render(&state, "upload_result.html", &settings, user.as_ref(), page)?.into_response())
+    }
 }
 
 pub(super) async fn url_upload_form(

@@ -206,15 +206,12 @@ async fn storage_command(config: AppConfig, command: StorageCommand) -> anyhow::
             let storage = storage::BlobStorage::from_config(&config).await?;
             let expired_files = db.expired_files().await?;
             let expired_file_count = expired_files.len();
-            let expired_upload_sessions = db.expired_upload_sessions().await?;
-            let expired_upload_session_count = expired_upload_sessions.len();
             let expired_pastes = if dry_run {
                 db.expired_paste_count().await? as u64
             } else {
                 db.expire_due_pastes().await?
             };
             let mut deleted_blobs = 0_u64;
-            let mut deleted_temp_files = 0_u64;
             for file in expired_files {
                 if dry_run {
                     continue;
@@ -226,14 +223,6 @@ async fn storage_command(config: AppConfig, command: StorageCommand) -> anyhow::
                     deleted_blobs += 1;
                 }
             }
-            if !dry_run {
-                for session in expired_upload_sessions {
-                    if tokio::fs::remove_file(&session.temp_path).await.is_ok() {
-                        deleted_temp_files += 1;
-                    }
-                    db.delete_upload_session(&session.id).await?;
-                }
-            }
             let expired_auth_state = if dry_run {
                 0
             } else {
@@ -241,12 +230,12 @@ async fn storage_command(config: AppConfig, command: StorageCommand) -> anyhow::
             };
             if dry_run {
                 println!(
-                    "storage reachable; dry-run would expire {} files, {} pastes, and {} upload sessions",
-                    expired_file_count, expired_pastes, expired_upload_session_count
+                    "storage reachable; dry-run would expire {} files and {} pastes",
+                    expired_file_count, expired_pastes
                 );
             } else {
                 println!(
-                    "storage reachable; expired items processed; deleted {deleted_blobs} blobs, {deleted_temp_files} temp files, and {expired_auth_state} auth rows"
+                    "storage reachable; expired items processed; deleted {deleted_blobs} blobs and {expired_auth_state} auth rows"
                 );
             }
             Ok(())
@@ -314,10 +303,9 @@ async fn jobs_command(config: AppConfig, command: JobCommand) -> anyhow::Result<
             let settings = state.settings().await?;
             let summary = jobs::run_once(&state, &settings).await?;
             println!(
-                "jobs complete: expired_files={}, expired_pastes={}, expired_upload_sessions={}, expired_auth_rows={}, deleted_blobs={}, deleted_temp_files={}, scanner_retries={}, metadata_updates={}, missing_blobs={}, orphaned_blobs={}",
+                "jobs complete: expired_files={}, expired_pastes={}, expired_auth_rows={}, deleted_blobs={}, deleted_temp_files={}, scanner_retries={}, metadata_updates={}, missing_blobs={}, orphaned_blobs={}",
                 summary.expired_files,
                 summary.expired_pastes,
-                summary.expired_upload_sessions,
                 summary.expired_auth_rows,
                 summary.deleted_blobs,
                 summary.deleted_temp_files,
