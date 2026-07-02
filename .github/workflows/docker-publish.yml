@@ -32,7 +32,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: uwuumoe/midden
+  IMAGE_NAME: weebonl/midden
 
 jobs:
   build-amd64:
