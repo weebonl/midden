@@ -162,9 +162,12 @@ async fn serve(config: AppConfig) -> anyhow::Result<()> {
     let router = state.router();
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "midden listening");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 

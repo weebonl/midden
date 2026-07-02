@@ -114,21 +114,18 @@ pub(super) async fn url_upload(
             "only http and https URLs are supported".to_string(),
         ));
     }
-    let fetched = fetch_url_upload(&settings, url.clone()).await?;
+    let mut fetched = fetch_url_upload(&settings, url.clone()).await?;
     let filename = url
         .path_segments()
         .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty())
         .map(ToOwned::to_owned);
+    fetched.file.filename = filename;
     let result = persist_file_upload(
         &state,
         &settings,
         user.as_ref(),
-        UploadedBytes {
-            bytes: fetched.bytes,
-            filename,
-            content_type: fetched.content_type,
-        },
+        fetched.file,
         parse_expiry_or_default_checked(
             &settings,
             user.as_ref(),
@@ -199,7 +196,8 @@ pub(super) async fn file_slug(
         });
         Ok(render(&state, "file_preview.html", &settings, user.as_ref(), page)?.into_response())
     } else {
-        serve_file(&state, &settings, &headers, file).await
+        let cache_scope = file_cache_scope(&file);
+        serve_file(&state, &settings, &headers, file, cache_scope).await
     }
 }
 
@@ -268,7 +266,40 @@ pub(super) async fn raw_file(
         file.owner_user_id.as_deref(),
         &file.visibility,
     )?;
-    serve_file(&state, &settings, &headers, file).await
+    let cache_scope = file_cache_scope(&file);
+    serve_file(&state, &settings, &headers, file, cache_scope).await
+}
+
+pub(super) async fn thumbnail_file(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> AppResult<Response> {
+    let settings = state.settings().await?;
+    let user = current_user(&state, &jar).await?;
+    let file = state
+        .db
+        .active_file_by_public_id(&id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    authorize_item_view(
+        &settings,
+        user.as_ref(),
+        file.owner_user_id.as_deref(),
+        &file.visibility,
+    )?;
+    let thumbnail_hash = file.thumbnail_hash.as_deref().ok_or(AppError::NotFound)?;
+    let bytes = state.storage.get_blob(thumbnail_hash).await?;
+    let mut response = bytes.into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    insert_cache_control(
+        &mut response,
+        settings.delivery.public_cache_seconds,
+        file_cache_scope(&file),
+    );
+    Ok(response)
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,7 +336,7 @@ pub(super) async fn internal_raw_file(
         .active_file_by_public_id(&id)
         .await?
         .ok_or(AppError::NotFound)?;
-    serve_file(&state, &settings, &headers, file).await
+    serve_file(&state, &settings, &headers, file, CacheScope::Public).await
 }
 
 async fn serve_file(
@@ -313,6 +344,7 @@ async fn serve_file(
     settings: &RuntimeSettings,
     headers: &HeaderMap,
     file: FileItem,
+    cache_scope: CacheScope,
 ) -> AppResult<Response> {
     use futures_util::StreamExt;
     use headers::HeaderMapExt;
@@ -404,16 +436,15 @@ async fn serve_file(
     let mut response = body.into_response();
     if is_partial {
         *response.status_mut() = StatusCode::PARTIAL_CONTENT;
-        if let Some(cr) = content_range_val {
-            if let Ok(val) = HeaderValue::from_str(&cr) {
-                response.headers_mut().insert(header::CONTENT_RANGE, val);
-            }
+        if let Some(cr) = content_range_val
+            && let Ok(val) = HeaderValue::from_str(&cr)
+        {
+            response.headers_mut().insert(header::CONTENT_RANGE, val);
         }
     }
-    response.headers_mut().insert(
-        header::ACCEPT_RANGES,
-        HeaderValue::from_static("bytes"),
-    );
+    response
+        .headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     response.headers_mut().insert(
         header::CONTENT_LENGTH,
         HeaderValue::from(content_length_val),
@@ -439,10 +470,18 @@ async fn serve_file(
     insert_cache_control(
         &mut response,
         settings.delivery.public_cache_seconds,
-        CacheScope::Public,
+        cache_scope,
     );
     state.metrics.served_files.inc();
     Ok(response)
+}
+
+fn file_cache_scope(file: &FileItem) -> CacheScope {
+    if file.visibility == "private" {
+        CacheScope::Private
+    } else {
+        CacheScope::Public
+    }
 }
 
 fn is_risky_mime(settings: &RuntimeSettings, content_type: &str) -> bool {

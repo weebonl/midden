@@ -3,7 +3,7 @@ use super::*;
 impl Database {
     pub async fn blob_hashes(&self) -> anyhow::Result<Vec<String>> {
         let rows = self
-            .query("SELECT hash FROM blobs ORDER BY hash")
+            .query("SELECT hash FROM blobs WHERE ref_count > 0 ORDER BY hash")
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(|row| Ok(row.try_get("hash")?)).collect()
@@ -57,7 +57,14 @@ impl Database {
             .bind(hash)
             .fetch_one(&self.pool)
             .await?;
-        Ok(row.try_get("ref_count")?)
+        let ref_count = row.try_get("ref_count")?;
+        if ref_count == 0 {
+            self.query("DELETE FROM blobs WHERE hash = ? AND ref_count = 0")
+                .bind(hash)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(ref_count)
     }
 
     pub async fn create_file_item(&self, new: NewFileItem<'_>) -> anyhow::Result<FileItem> {
@@ -129,7 +136,10 @@ impl Database {
         reason: &str,
     ) -> anyhow::Result<FileItem> {
         let file = self.file_by_id(file_id).await?;
-        self.query("UPDATE files SET state = 'deleted' WHERE id = ?")
+        if file.state != "active" {
+            return Ok(file);
+        }
+        self.query("UPDATE files SET state = 'deleted' WHERE id = ? AND state = 'active'")
             .bind(file_id)
             .execute(&self.pool)
             .await?;
@@ -323,7 +333,7 @@ impl Database {
                 "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
                     size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
                     visibility, metadata_json, thumbnail_hash, state, created_at
-             FROM files WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= ?",
+             FROM files WHERE state IN ('active', 'quarantined') AND expires_at IS NOT NULL AND expires_at <= ?",
             )
             .bind(util::now_ts())
             .fetch_all(&self.pool)
@@ -468,7 +478,10 @@ impl Database {
                      FROM files
                      WHERE state = 'active'
                        AND (expires_at IS NULL OR expires_at > ?)
-                       AND (metadata_json IS NULL OR thumbnail_hash IS NULL)
+                       AND (
+                            metadata_json IS NULL
+                         OR (thumbnail_hash IS NULL AND content_type IN ('image/jpeg', 'image/png', 'image/gif'))
+                       )
                      ORDER BY created_at ASC LIMIT ?",
                 )
                 .bind(util::now_ts())
@@ -501,6 +514,7 @@ impl Database {
                      WHERE state = 'active'
                        AND (expires_at IS NULL OR expires_at > ?)
                        AND thumbnail_hash IS NULL
+                       AND content_type IN ('image/jpeg', 'image/png', 'image/gif')
                      ORDER BY created_at ASC LIMIT ?",
                 )
                 .bind(util::now_ts())
@@ -522,13 +536,23 @@ impl Database {
                  FROM files
                  WHERE state IN ('active', 'quarantined')
                    AND EXISTS (
-                     SELECT 1 FROM scanner_results
-                      WHERE scanner_results.item_kind = 'file'
-                        AND scanner_results.item_public_id = files.public_id
+                     SELECT 1 FROM scanner_results failed
+                      WHERE failed.item_kind = 'file'
+                        AND failed.item_public_id = files.public_id
                         AND (
-                             lower(scanner_results.detail) LIKE '%failed%'
-                          OR lower(scanner_results.detail) LIKE '%returned http%'
-                          OR lower(scanner_results.detail) LIKE '%invalid webhook%'
+                             lower(failed.detail) LIKE '%failed%'
+                          OR lower(failed.detail) LIKE '%returned http%'
+                          OR lower(failed.detail) LIKE '%invalid webhook%'
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM scanner_results resolved
+                             WHERE resolved.item_kind = failed.item_kind
+                               AND resolved.item_public_id = failed.item_public_id
+                               AND resolved.adapter = failed.adapter
+                               AND resolved.created_at >= failed.created_at
+                               AND lower(resolved.detail) NOT LIKE '%failed%'
+                               AND lower(resolved.detail) NOT LIKE '%returned http%'
+                               AND lower(resolved.detail) NOT LIKE '%invalid webhook%'
                         )
                    )
                  ORDER BY created_at ASC LIMIT ?",
@@ -545,10 +569,10 @@ impl Database {
         let row = if let Some(user_id) = user_id {
             self.query(
                 "SELECT
-                    COALESCE(SUM(CASE WHEN state = 'active' THEN size_bytes ELSE 0 END), 0) AS storage_bytes,
+                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN size_bytes ELSE 0 END), 0) AS storage_bytes,
                     COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS daily_upload_bytes,
                     COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS monthly_upload_bytes,
-                    COALESCE(SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END), 0) AS item_count
+                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN 1 ELSE 0 END), 0) AS item_count
                  FROM files WHERE owner_user_id = ?",
             )
             .bind(day_start)
@@ -559,10 +583,10 @@ impl Database {
         } else {
             self.query(
                 "SELECT
-                    COALESCE(SUM(CASE WHEN state = 'active' THEN size_bytes ELSE 0 END), 0) AS storage_bytes,
+                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN size_bytes ELSE 0 END), 0) AS storage_bytes,
                     COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS daily_upload_bytes,
                     COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS monthly_upload_bytes,
-                    COALESCE(SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END), 0) AS item_count
+                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN 1 ELSE 0 END), 0) AS item_count
                  FROM files WHERE owner_user_id IS NULL",
             )
             .bind(day_start)

@@ -142,8 +142,13 @@ async fn start_two_factor_challenge(
             "email",
         )
         .await?;
+    let secure_cookies = state.settings().await?.security.secure_cookies;
     Ok((
-        jar.add(transient_cookie(TWO_FACTOR_CHALLENGE_COOKIE, challenge)),
+        jar.add(transient_cookie(
+            TWO_FACTOR_CHALLENGE_COOKIE,
+            challenge,
+            secure_cookies,
+        )),
         Redirect::to("/auth/2fa"),
     )
         .into_response())
@@ -161,10 +166,12 @@ pub(super) async fn create_session_response(
         .db
         .create_session(&user.id, &token_hash, expires)
         .await?;
+    let secure_cookies = state.settings().await?.security.secure_cookies;
     let cookie = session_cookie(
         state,
         token,
         Some(state.config.security.session_ttl_seconds),
+        secure_cookies,
     );
     Ok((jar.add(cookie), Redirect::to("/account")).into_response())
 }
@@ -226,9 +233,14 @@ pub(super) async fn two_factor_submit(
         .db
         .audit(Some(&user.id), "auth.login", &user.id, "two-factor")
         .await?;
+    let secure_cookies = state.settings().await?.security.secure_cookies;
     create_session_response(
         &state,
-        jar.remove(transient_cookie(TWO_FACTOR_CHALLENGE_COOKIE, String::new())),
+        jar.remove(transient_cookie(
+            TWO_FACTOR_CHALLENGE_COOKIE,
+            String::new(),
+            secure_cookies,
+        )),
         &user,
     )
     .await
@@ -246,7 +258,8 @@ pub(super) async fn logout(
             .delete_session(&util::hash_token(cookie.value()))
             .await?;
     }
-    let cookie = session_cookie(&state, String::new(), Some(0));
+    let secure_cookies = state.settings().await?.security.secure_cookies;
+    let cookie = session_cookie(&state, String::new(), Some(0), secure_cookies);
     Ok((jar.remove(cookie), Redirect::to("/")).into_response())
 }
 
@@ -493,11 +506,17 @@ pub(super) async fn register(
             .invite_token
             .as_deref()
             .ok_or_else(|| AppError::BadRequest("invite token is required".to_string()))?;
-        let role = state
+        let role = match state
             .db
             .consume_invite_token(&util::hash_token(token), &created.id)
             .await
-            .map_err(|_| AppError::BadRequest("invalid invite token".to_string()))?;
+        {
+            Ok(role) => role,
+            Err(_) => {
+                state.db.delete_user(&created.id).await?;
+                return Err(AppError::BadRequest("invalid invite token".to_string()));
+            }
+        };
         state.db.set_user_role(&created.id, role).await?;
     }
     state

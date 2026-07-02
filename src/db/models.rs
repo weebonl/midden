@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -335,7 +334,6 @@ impl ModerationNote {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct FileUsage {
     pub storage_bytes: i64,
@@ -343,4 +341,3 @@ pub struct FileUsage {
     pub monthly_upload_bytes: i64,
     pub item_count: i64,
 }
-

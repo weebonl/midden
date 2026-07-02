@@ -95,7 +95,9 @@
     document.body.appendChild(textarea);
     textarea.select();
     try {
-      document.execCommand("copy");
+      if (!document.execCommand("copy")) {
+        return Promise.reject(new Error("copy command failed"));
+      }
       return Promise.resolve();
     } finally {
       textarea.remove();
@@ -109,13 +111,19 @@
       const sourceElement = source ? document.querySelector(source) : null;
       const value = sourceElement ? sourceElement.value || sourceElement.textContent : copyButton.getAttribute("data-copy-value");
       if (!value) return;
+      const original = copyButton.getAttribute("data-copy-label") || copyButton.textContent;
+      copyButton.setAttribute("data-copy-label", original);
       window.middenCopy(value).then(() => {
-        const original = copyButton.getAttribute("data-copy-label") || copyButton.textContent;
         copyButton.setAttribute("data-copy-label", original);
         copyButton.textContent = "Copied";
         window.setTimeout(() => {
           copyButton.textContent = copyButton.getAttribute("data-copy-label") || original;
         }, 1600);
+      }).catch(() => {
+        copyButton.textContent = "Copy failed";
+        window.setTimeout(() => {
+          copyButton.textContent = copyButton.getAttribute("data-copy-label") || original;
+        }, 2200);
       });
     }
 
@@ -202,6 +210,16 @@
       unit = units[index];
     }
     return size.toFixed(size < 10 ? 1 : 0) + " " + unit;
+  }
+
+  function storedLocation(file) {
+    if (!file || !window.localStorage) return null;
+    try {
+      const key = ["midden:upload-session", file.name, file.size, file.lastModified].join(":");
+      return window.localStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
   }
 
   function updateSelectedFile() {

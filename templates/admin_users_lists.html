@@ -41,7 +41,7 @@
           <td data-label="User">{{ user.username }}</td>
           <td data-label="Email">{{ user.email }}</td>
           <td data-label="Role">
-            <form method="post" action="/admin/users/{{ user.id }}/role" hx-post="/admin/users/{{ user.id }}/role" hx-target="#admin-users-lists" hx-swap="outerHTML">
+            <form method="post" action="/admin/users/{{ user.id }}/role" hx-post="/admin/users/{{ user.id }}/role" hx-target="#admin-users-lists" hx-swap="outerHTML" x-data x-on:submit="const role = $el.querySelector('select[name=role]').value; if ((role === 'admin' || role === 'owner') && !confirm('Grant this user elevated privileges?')) $event.preventDefault();">
               <select name="role">
                 <option value="user" {% if user.role == "user" %}selected{% endif %}>user</option>
                 <option value="moderator" {% if user.role == "moderator" %}selected{% endif %}>moderator</option>

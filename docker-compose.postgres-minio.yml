@@ -10,7 +10,7 @@ services:
       - "8080:8080"
     environment:
       MIDDEN__SERVER__BIND: "0.0.0.0:8080"
-      MIDDEN__SERVER__PUBLIC_BASE_URL: "http://127.0.0.1:8080"
+      MIDDEN__SERVER__PUBLIC_BASE_URL: "${MIDDEN_PUBLIC_BASE_URL:-http://localhost:8080}"
       MIDDEN__DATABASE__URL: "postgres://midden:midden@postgres:5432/midden"
       MIDDEN__STORAGE__BACKEND: "s3"
       MIDDEN__STORAGE__S3__BUCKET: "midden"
@@ -58,4 +58,3 @@ services:
 volumes:
   midden-postgres:
   midden-minio:
-

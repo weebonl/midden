@@ -126,6 +126,22 @@ impl Database {
         Ok(())
     }
 
+    pub async fn delete_user(&self, user_id: &str) -> anyhow::Result<()> {
+        self.query("DELETE FROM users WHERE id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn enabled_owner_count(&self) -> anyhow::Result<i64> {
+        let row = self
+            .query("SELECT COUNT(*) AS count FROM users WHERE role = 'owner' AND is_disabled = 0")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.try_get("count")?)
+    }
+
     pub async fn set_user_email_verified_at(
         &self,
         user_id: &str,
@@ -515,11 +531,11 @@ impl Database {
         Ok(())
     }
 
-    pub async fn user_by_api_token(
+    pub async fn user_by_api_token_with_scopes(
         &self,
         token_hash: &str,
         required_scope: &str,
-    ) -> anyhow::Result<Option<User>> {
+    ) -> anyhow::Result<Option<(User, Vec<String>)>> {
         let row = self.query(
             "SELECT u.id, u.email, u.username, u.password_hash, u.role, u.is_disabled, u.email_verified_at, u.two_factor_enabled, u.created_at,
                     t.id AS token_id, t.scopes_json
@@ -546,7 +562,7 @@ impl Database {
                 .bind(token_id)
                 .execute(&self.pool)
                 .await?;
-            return Ok(Some(User::from_row(&row)?));
+            return Ok(Some((User::from_row(&row)?, scopes)));
         }
         Ok(None)
     }

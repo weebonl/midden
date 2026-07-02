@@ -1,9 +1,16 @@
-use std::{collections::BTreeMap, net::IpAddr, path::PathBuf, time::Instant};
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    time::Instant,
+};
 
 use axum::{
     Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State},
+    extract::{
+        DefaultBodyLimit, Multipart, Path, Query, Request, State, connect_info::ConnectInfo,
+    },
     handler::Handler,
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{self, Next},
@@ -115,11 +122,15 @@ pub fn router(state: AppState) -> Router {
 
     let file_routes = Router::new()
         .route("/files/{id}/raw", get(raw_file))
+        .route("/files/{id}/thumbnail", get(thumbnail_file))
         .route("/internal/files/{id}/raw", get(internal_raw_file))
         .route("/{slug}", get(file_slug));
 
     let app_routes = Router::new()
-        .route("/", get(index).post(upload_form_file.layer(DefaultBodyLimit::disable())))
+        .route(
+            "/",
+            get(index).post(upload_form_file.layer(DefaultBodyLimit::disable())),
+        )
         .route("/url-upload", get(url_upload_form).post(url_upload))
         .route("/static/{*path}", get(static_asset))
         .route("/browse", get(public_browse))
@@ -131,7 +142,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/openapi.json", get(api_openapi))
         .route("/api/v1/me/files", get(api_list_my_files))
         .route("/api/v1/me/pastes", get(api_list_my_pastes))
-        .route("/api/v1/files", post(api_upload_file.layer(DefaultBodyLimit::disable())))
+        .route(
+            "/api/v1/files",
+            post(api_upload_file.layer(DefaultBodyLimit::disable())),
+        )
         .route("/api/v1/files/{id}", delete(api_delete_file))
         .route("/api/v1/pastes", post(api_create_paste))
         .route("/api/v1/pastes/{id}", delete(api_delete_paste))
@@ -252,7 +266,7 @@ async fn file_origin_middleware(
 }
 
 fn is_public_file_path(path: &str) -> bool {
-    if path.starts_with("/files/") && path.ends_with("/raw") {
+    if path.starts_with("/files/") && (path.ends_with("/raw") || path.ends_with("/thumbnail")) {
         return true;
     }
     let Some(slug) = path.strip_prefix('/') else {
@@ -299,7 +313,12 @@ async fn csrf_cookie_middleware(
         let mut cookie = Cookie::new(CSRF_COOKIE, util::secret_token());
         cookie.set_path("/");
         cookie.set_same_site(SameSite::Lax);
-        cookie.set_secure(state.config.security.secure_cookies);
+        let secure_cookies = state
+            .settings()
+            .await
+            .map(|settings| settings.security.secure_cookies)
+            .unwrap_or(state.config.security.secure_cookies);
+        cookie.set_secure(secure_cookies);
         if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {
             response.headers_mut().append(header::SET_COOKIE, value);
         }

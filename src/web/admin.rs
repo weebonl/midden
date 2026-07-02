@@ -168,6 +168,29 @@ fn role_requires_owner_actor(role: Role, user: Option<&User>) -> bool {
     role == Role::Owner && user.is_none_or(|user| user.role != Role::Owner)
 }
 
+async fn ensure_owner_account_mutation_allowed(
+    state: &AppState,
+    actor: Option<&User>,
+    target: &User,
+    next_role: Option<Role>,
+    disabling: bool,
+) -> AppResult<()> {
+    if target.role != Role::Owner {
+        return Ok(());
+    }
+    if actor.is_none_or(|user| user.role != Role::Owner) {
+        return Err(AppError::Forbidden);
+    }
+    let removes_enabled_owner =
+        !target.is_disabled && (disabling || next_role.is_some_and(|role| role != Role::Owner));
+    if removes_enabled_owner && state.db.enabled_owner_count().await? <= 1 {
+        return Err(AppError::BadRequest(
+            "cannot remove the last enabled owner".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct AdminCreateUserForm {
     email: String,
@@ -247,6 +270,9 @@ pub(super) async fn admin_set_user_role(
     if role_requires_owner_actor(role, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
+    let target = state.db.user_by_id(&id).await?;
+    ensure_owner_account_mutation_allowed(&state, user.as_ref(), &target, Some(role), false)
+        .await?;
     state.db.set_user_role(&id, role).await?;
     state
         .db
@@ -311,6 +337,8 @@ async fn set_user_disabled_from_admin(
             "admins cannot disable themselves".to_string(),
         ));
     }
+    let target = state.db.user_by_id(&id).await?;
+    ensure_owner_account_mutation_allowed(&state, user.as_ref(), &target, None, disabled).await?;
     state.db.set_user_disabled(&id, disabled).await?;
     state
         .db

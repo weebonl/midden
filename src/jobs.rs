@@ -92,7 +92,6 @@ pub async fn cleanup_expired(state: &AppState) -> anyhow::Result<JobSummary> {
 
     summary.expired_pastes = state.db.expire_due_pastes().await?;
 
-
     summary.expired_auth_rows = state.db.cleanup_expired_auth_state().await?;
     Ok(summary)
 }
@@ -112,7 +111,9 @@ async fn retry_scanners(state: &AppState, settings: &RuntimeSettings) -> anyhow:
         let scan = scanner::scan_upload(
             &settings.scanning,
             ScanInput {
-                bytes: &bytes,
+                bytes: Some(&bytes),
+                path: None,
+                size_bytes: file.size_bytes,
                 filename: file.original_filename.as_deref(),
                 content_type: file.content_type.as_deref(),
                 hash: &file.blob_hash,

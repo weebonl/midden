@@ -141,8 +141,8 @@ page_size = 50
 # temp_dir = "/var/lib/midden/tmp"
 
 [metrics]
-enabled = true
-access = "public"
+enabled = false
+access = "admin"
 # bearer_token = "change-me"
 
 [tokens]

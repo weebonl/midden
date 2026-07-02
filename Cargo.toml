@@ -1,35 +1,20 @@
 [package]
 name = "midden"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "A self-hostable Rust file and paste sharing service."
 
-[workspace.lints.rust]
+[lints.rust]
 unsafe_code = "deny"
-unreachable_pub = "warn"
-unused_qualifications = "warn"
-missing_debug_implementations = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
-[workspace.lints.clippy]
+[lints.clippy]
 all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
 
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
-
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
-
-print_stdout = "warn"
-print_stderr = "warn"
-
-wildcard_imports = "warn"
-enum_glob_use = "warn"
 
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
@@ -50,7 +35,7 @@ anyhow = "1.0.98"
 argon2 = "0.5.3"
 async-trait = "0.1.88"
 axum = { version = "0.8.9", features = ["macros", "multipart"] }
-axum-extra = { version = "0.12.6", features = ["cookie"] }
+axum-extra = { version = "0.12.6", features = ["cookie", "form"] }
 base64 = "0.22.1"
 bytes = "1.10.1"
 chrono = { version = "0.4.41", features = ["serde"] }

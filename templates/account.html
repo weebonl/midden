@@ -6,13 +6,13 @@
   <p>{{ current_user.username }} ({{ current_user.role }})</p>
 
   <div x-data="{ activeTab: 'items' }">
-    <nav class="settings-tabs" aria-label="Account Tabs">
-      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'items' }" x-on:click="activeTab = 'items'">My Items</button>
-      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" x-on:click="activeTab = 'security'">Security & Settings</button>
-      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'tokens' }" x-on:click="activeTab = 'tokens'">API Tokens</button>
+    <nav class="settings-tabs" aria-label="Account Tabs" role="tablist">
+      <button id="account-tab-items" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'items' }" :aria-selected="activeTab === 'items' ? 'true' : 'false'" aria-controls="account-panel-items" x-on:click="activeTab = 'items'">My Items</button>
+      <button id="account-tab-security" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" :aria-selected="activeTab === 'security' ? 'true' : 'false'" aria-controls="account-panel-security" x-on:click="activeTab = 'security'">Security & Settings</button>
+      <button id="account-tab-tokens" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'tokens' }" :aria-selected="activeTab === 'tokens' ? 'true' : 'false'" aria-controls="account-panel-tokens" x-on:click="activeTab = 'tokens'">API Tokens</button>
     </nav>
 
-    <div x-show="activeTab === 'items'">
+    <div id="account-panel-items" role="tabpanel" aria-labelledby="account-tab-items" x-show="activeTab === 'items'">
       <form method="get" action="/account" hx-get="/account" hx-target="#account-items" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, input changed delay:300ms" hx-indicator="#account-search-indicator" hx-disabled-elt="find button">
         <p><label>Search your items<br><input name="q" value="{{ page.q }}" placeholder="filename, id, syntax"></label></p>
         <p><button type="submit">Search</button>{% if page.q %} <a href="/account">Clear</a>{% endif %} <span id="account-search-indicator" class="htmx-indicator">Loading...</span></p>
@@ -21,7 +21,7 @@
       {% include "account_items.html" %}
     </div>
 
-    <div x-show="activeTab === 'security'">
+    <div id="account-panel-security" role="tabpanel" aria-labelledby="account-tab-security" x-show="activeTab === 'security'">
       <h3>Email</h3>
       <p>{{ current_user.email }} - {% if page.email_verified %}verified{% else %}not verified{% endif %}</p>
       {% if not page.email_verified and page.smtp_enabled %}
@@ -70,7 +70,7 @@
       </form>
     </div>
 
-    <div x-show="activeTab === 'tokens'">
+    <div id="account-panel-tokens" role="tabpanel" aria-labelledby="account-tab-tokens" x-show="activeTab === 'tokens'">
       {% include "account_tokens.html" %}
     </div>
   </div>

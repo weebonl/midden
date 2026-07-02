@@ -1,5 +1,5 @@
 <section id="account-items" aria-live="polite">
-  <form method="post" action="/account/items/bulk" x-data x-on:submit="if ($el.querySelectorAll('input[type=checkbox]:checked').length === 0) { $event.preventDefault(); }">
+  <form method="post" action="/account/items/bulk" x-data x-on:submit="if ($el.querySelectorAll('input[type=checkbox]:checked').length === 0) { $event.preventDefault(); } else if ($el.querySelector('select[name=bulk_action]').value === 'delete' && !confirm('Delete selected items?')) { $event.preventDefault(); }">
     <div class="bulk-actions">
       <label>Bulk action<br>
         <select name="bulk_action">

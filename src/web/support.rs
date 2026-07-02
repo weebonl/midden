@@ -2,14 +2,15 @@ use super::*;
 
 pub(super) enum CacheScope {
     Public,
+    Private,
 }
 
-pub(super) fn insert_cache_control(response: &mut Response, seconds: u64, _scope: CacheScope) {
-    let value = if seconds == 0 {
-        HeaderValue::from_static("no-store")
-    } else {
-        HeaderValue::from_str(&format!("public, max-age={seconds}"))
-            .unwrap_or_else(|_| HeaderValue::from_static("public, max-age=3600"))
+pub(super) fn insert_cache_control(response: &mut Response, seconds: u64, scope: CacheScope) {
+    let value = match scope {
+        CacheScope::Private => HeaderValue::from_static("private, no-store"),
+        CacheScope::Public if seconds == 0 => HeaderValue::from_static("no-store"),
+        CacheScope::Public => HeaderValue::from_str(&format!("public, max-age={seconds}"))
+            .unwrap_or_else(|_| HeaderValue::from_static("public, max-age=3600")),
     };
     response.headers_mut().insert(header::CACHE_CONTROL, value);
 }
@@ -46,6 +47,18 @@ pub(super) fn raw_file_url(
 ) -> String {
     format!(
         "{}/files/{}/raw",
+        file_base_url(state, settings),
+        file.public_id
+    )
+}
+
+pub(super) fn thumbnail_file_url(
+    state: &AppState,
+    settings: &RuntimeSettings,
+    file: &FileItem,
+) -> String {
+    format!(
+        "{}/files/{}/thumbnail",
         file_base_url(state, settings),
         file.public_id
     )
@@ -214,22 +227,23 @@ fn rate_limit_identity(state: &AppState, headers: &HeaderMap, user: Option<&User
     if let Some(user) = user {
         return format!("user:{}", user.id);
     }
-    if state.config.server.behind_proxy
-        && let Some(forwarded) = headers
+    if state.config.server.behind_proxy {
+        if let Some(forwarded) = headers
             .get("x-forwarded-for")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(',').next())
             .map(str::trim)
             .filter(|value| !value.is_empty())
-    {
-        return format!("ip:{forwarded}");
-    }
-    if let Some(real_ip) = headers
-        .get("x-real-ip")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-    {
-        return format!("ip:{real_ip}");
+        {
+            return format!("ip:{forwarded}");
+        }
+        if let Some(real_ip) = headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+        {
+            return format!("ip:{real_ip}");
+        }
     }
     "anonymous".to_string()
 }
@@ -239,19 +253,41 @@ pub(super) async fn api_user(
     headers: &HeaderMap,
     required_scope: &str,
 ) -> AppResult<Option<User>> {
+    let Some(actor) = api_authenticated_user(state, headers, required_scope).await? else {
+        return Ok(None);
+    };
+    Ok(Some(actor.user))
+}
+
+#[derive(Debug)]
+pub(super) struct ApiAuthenticatedUser {
+    pub user: User,
+    pub scopes: Vec<String>,
+}
+
+pub(super) async fn api_authenticated_user(
+    state: &AppState,
+    headers: &HeaderMap,
+    required_scope: &str,
+) -> AppResult<Option<ApiAuthenticatedUser>> {
     let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     if let Some(token) = bearer {
-        let user = state
+        let Some((user, scopes)) = state
             .db
-            .user_by_api_token(&util::hash_token(token), required_scope)
+            .user_by_api_token_with_scopes(&util::hash_token(token), required_scope)
             .await?
-            .ok_or(AppError::Unauthorized)?;
+        else {
+            return Err(AppError::Unauthorized);
+        };
         if policy::can_use_api(&settings, Some(&user)) {
-            return Ok(Some(user));
+            return Ok(Some(ApiAuthenticatedUser { user, scopes }));
         }
         return Err(AppError::Forbidden);
     }
@@ -282,23 +318,25 @@ pub(super) fn session_cookie(
     state: &AppState,
     token: String,
     max_age_seconds: Option<i64>,
+    secure: bool,
 ) -> Cookie<'static> {
     let mut cookie = Cookie::new(state.config.security.session_cookie_name.clone(), token);
     cookie.set_path("/");
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
-    cookie.set_secure(state.config.security.secure_cookies);
+    cookie.set_secure(secure);
     if let Some(seconds) = max_age_seconds {
         cookie.set_max_age(time::Duration::seconds(seconds));
     }
     cookie
 }
 
-pub(super) fn transient_cookie(name: &'static str, value: String) -> Cookie<'static> {
+pub(super) fn transient_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'static> {
     let mut cookie = Cookie::new(name, value);
     cookie.set_path("/");
     cookie.set_http_only(true);
     cookie.set_same_site(SameSite::Lax);
+    cookie.set_secure(secure);
     cookie.set_max_age(time::Duration::minutes(10));
     cookie
 }

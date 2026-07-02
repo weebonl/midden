@@ -5,7 +5,7 @@
   <h2>Users</h2>
 
   <h3>Create user</h3>
-  <form method="post" action="/admin/users" hx-post="/admin/users" hx-target="#admin-users-lists" hx-swap="outerHTML" hx-indicator="#admin-users-indicator" hx-disabled-elt="find button">
+  <form method="post" action="/admin/users" hx-post="/admin/users" hx-target="#admin-users-lists" hx-swap="outerHTML" hx-indicator="#admin-users-indicator" hx-disabled-elt="find button" x-data x-on:submit="const role = $el.querySelector('select[name=role]').value; if ((role === 'admin' || role === 'owner') && !confirm('Create this user with elevated privileges?')) $event.preventDefault();">
     <p><label>Email<br><input type="email" name="email" autocomplete="email" required></label></p>
     <p><label>Username<br><input name="username" autocomplete="username" required></label></p>
     <p><label>Password<br><input type="password" name="password" autocomplete="new-password" required></label></p>

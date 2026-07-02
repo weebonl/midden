@@ -497,127 +497,127 @@ body.theme-dark select {
   body.theme-auto select {
     background: oklch(0.12 0.01 250);
   }
+}
 
-  .settings-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 16px 0 24px;
-    border-bottom: 1px solid var(--line);
-    padding-bottom: 10px;
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 24px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.settings-tabs .tab-button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 6px 16px;
+  font-weight: 500;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.settings-tabs .tab-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.settings-tabs .tab-button.is-active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+body.theme-dark .settings-tabs .tab-button.is-active {
+  color: var(--bg);
+}
+
+@media (max-width: 520px) {
+  .page {
+    width: min(100% - 16px, 760px);
+    margin-top: 18px;
   }
 
-  .settings-tabs .tab-button {
+  .page--wide {
+    width: min(100% - 16px, 1180px);
+  }
+
+  .brand {
+    font-size: 42px;
+  }
+
+  .drop-zone span {
+    font-size: 18px;
+  }
+
+  .site-nav a,
+  .site-nav form {
+    display: inline-block;
+    margin: 3px 4px;
+  }
+
+  table:not(.table-card) {
+    display: block;
+    overflow-x: auto;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+
+  td {
+    white-space: normal;
+  }
+
+  .table-card,
+  .table-card thead,
+  .table-card tbody,
+  .table-card tr,
+  .table-card th,
+  .table-card td {
+    display: block;
+    width: 100%;
+  }
+
+  .table-card thead {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .table-card tr {
     border: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--ink);
-    padding: 6px 16px;
-    font-weight: 500;
-    border-radius: 4px;
-    transition: all 0.2s ease;
+    margin: 10px 0;
+    padding: 6px 0;
   }
 
-  .settings-tabs .tab-button:hover {
-    background: var(--accent-soft);
-    border-color: var(--accent);
+  .table-card td,
+  .table-card th {
+    border: 0;
+    padding: 4px 8px;
   }
 
-  .settings-tabs .tab-button.is-active {
-    background: var(--accent);
-    color: white;
-    border-color: var(--accent);
+  .table-card td[data-label]::before {
+    content: attr(data-label) ": ";
+    display: inline;
+    color: var(--muted);
+    font-weight: 700;
   }
 
-  body.theme-dark .settings-tabs .tab-button.is-active {
-    color: var(--bg);
+  .admin-nav,
+  .settings-tabs,
+  .result-actions,
+  .action-list {
+    align-items: stretch;
+    flex-direction: column;
   }
 
-  @media (max-width: 520px) {
-    .page {
-      width: min(100% - 16px, 760px);
-      margin-top: 18px;
-    }
-
-    .page--wide {
-      width: min(100% - 16px, 1180px);
-    }
-
-    .brand {
-      font-size: 42px;
-    }
-
-    .drop-zone span {
-      font-size: 18px;
-    }
-
-    .site-nav a,
-    .site-nav form {
-      display: inline-block;
-      margin: 3px 4px;
-    }
-
-    table:not(.table-card) {
-      display: block;
-      overflow-x: auto;
-      font-size: 14px;
-      white-space: nowrap;
-    }
-
-    td {
-      white-space: normal;
-    }
-
-    .table-card,
-    .table-card thead,
-    .table-card tbody,
-    .table-card tr,
-    .table-card th,
-    .table-card td {
-      display: block;
-      width: 100%;
-    }
-
-    .table-card thead {
-      position: absolute;
-      inline-size: 1px;
-      block-size: 1px;
-      overflow: hidden;
-      clip-path: inset(50%);
-    }
-
-    .table-card tr {
-      border: 1px solid var(--line);
-      margin: 10px 0;
-      padding: 6px 0;
-    }
-
-    .table-card td,
-    .table-card th {
-      border: 0;
-      padding: 4px 8px;
-    }
-
-    .table-card td[data-label]::before {
-      content: attr(data-label) ": ";
-      display: inline;
-      color: var(--muted);
-      font-weight: 700;
-    }
-
-    .admin-nav,
-    .settings-tabs,
-    .result-actions,
-    .action-list {
-      align-items: stretch;
-      flex-direction: column;
-    }
-
-    .admin-nav a,
-    .result-actions a,
-    .action-list a,
-    .action-list button,
-    .settings-tabs button {
-      width: 100%;
-    }
+  .admin-nav a,
+  .result-actions a,
+  .action-list a,
+  .action-list button,
+  .settings-tabs button {
+    width: 100%;
   }
 }

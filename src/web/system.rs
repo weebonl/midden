@@ -37,9 +37,14 @@ pub(super) async fn readyz(State(state): State<AppState>) -> Response {
 
 pub(super) async fn metrics(
     State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
+    request: Request,
 ) -> AppResult<Response> {
+    let headers = request.headers().clone();
+    let jar = CookieJar::from_headers(&headers);
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .cloned();
     let settings = state.settings().await?;
     if !settings.metrics.enabled {
         return Err(AppError::NotFound);
@@ -68,14 +73,8 @@ pub(super) async fn metrics(
             }
         }
         crate::config::MetricsAccessMode::Loopback => {
-            let ip = headers
-                .get("x-real-ip")
-                .or_else(|| headers.get("x-forwarded-for"))
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(',').next())
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            if ip.is_some_and(|ip| ip != "127.0.0.1" && ip != "::1") {
+            let ip = client_ip_for_access_check(&state, &headers, peer.as_ref());
+            if !ip.is_some_and(|ip| ip.is_loopback()) {
                 return Err(AppError::Forbidden);
             }
         }
@@ -91,6 +90,26 @@ pub(super) async fn metrics(
         body,
     )
         .into_response())
+}
+
+fn client_ip_for_access_check(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer: Option<&ConnectInfo<SocketAddr>>,
+) -> Option<IpAddr> {
+    if state.config.server.behind_proxy
+        && let Some(ip) = headers
+            .get("x-real-ip")
+            .or_else(|| headers.get("x-forwarded-for"))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| value.parse::<IpAddr>().ok())
+    {
+        return Some(ip);
+    }
+    peer.map(|ConnectInfo(addr)| addr.ip())
 }
 
 pub(super) async fn static_asset(

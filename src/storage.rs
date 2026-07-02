@@ -4,9 +4,10 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use object_store::{
-    ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, local::LocalFileSystem,
-    path::Path as ObjectPath, GetOptions, GetRange,
+    GetOptions, GetRange, ObjectStore, ObjectStoreExt, aws::AmazonS3Builder, buffered::BufWriter,
+    local::LocalFileSystem, path::Path as ObjectPath,
 };
+use tokio::io::AsyncWriteExt;
 
 use crate::config::{AppConfig, StorageBackend};
 
@@ -17,6 +18,8 @@ pub struct BlobStorage {
 }
 
 impl BlobStorage {
+    const STREAM_UPLOAD_BUFFER_BYTES: usize = 5 * 1024 * 1024;
+
     pub async fn from_config(config: &AppConfig) -> anyhow::Result<Self> {
         match config.storage.backend {
             StorageBackend::Local => {
@@ -66,6 +69,22 @@ impl BlobStorage {
                 object_store::PutPayload::from_bytes(bytes),
             )
             .await?;
+        Ok(())
+    }
+
+    pub async fn put_blob_from_path(
+        &self,
+        hash: &str,
+        source_path: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let mut source = tokio::fs::File::open(source_path).await?;
+        let mut writer = BufWriter::with_capacity(
+            Arc::clone(&self.store),
+            self.object_path(hash),
+            Self::STREAM_UPLOAD_BUFFER_BYTES,
+        );
+        tokio::io::copy(&mut source, &mut writer).await?;
+        writer.shutdown().await?;
         Ok(())
     }
 

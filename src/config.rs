@@ -31,7 +31,7 @@ impl AppConfig {
         let mut builder = config::Config::builder();
 
         if let Some(path) = path {
-            builder = builder.add_source(config::File::from(path).required(false));
+            builder = builder.add_source(config::File::from(path).required(true));
         } else {
             builder = builder.add_source(config::File::with_name("midden.toml").required(false));
         }
@@ -42,7 +42,19 @@ impl AppConfig {
                 .try_parsing(true),
         );
 
-        Ok(builder.build()?.try_deserialize()?)
+        let config: Self = builder.build()?.try_deserialize()?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.delivery.isolated_file_origin && self.delivery.public_file_base_url.is_none() {
+            anyhow::bail!("isolated file origin requires a public file base URL");
+        }
+        if self.delivery.signed_internal_urls && self.delivery.internal_url_secret.is_none() {
+            anyhow::bail!("signed internal URLs require a secret");
+        }
+        Ok(())
     }
 }
 
@@ -221,7 +233,7 @@ impl<'de> Deserialize<'de> for LimitsConfig {
         let raw = RawLimitsConfig::deserialize(deserializer)?;
         let default = LimitsConfig::default();
         let max_upload_bytes = match (raw.max_upload_bytes, raw.max_tus_upload_bytes) {
-            (Some(upload), Some(legacy_tus)) => upload.max(legacy_tus),
+            (Some(upload), Some(_legacy_tus)) => upload,
             (Some(upload), None) => upload,
             (None, Some(legacy_tus)) => legacy_tus,
             (None, None) => default.max_upload_bytes,
@@ -659,18 +671,10 @@ impl Default for JobsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UploadsConfig {
     pub temp_dir: Option<PathBuf>,
-}
-
-impl Default for UploadsConfig {
-    fn default() -> Self {
-        Self {
-            temp_dir: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -684,8 +688,8 @@ pub struct MetricsConfig {
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            access: MetricsAccessMode::Public,
+            enabled: false,
+            access: MetricsAccessMode::Admin,
             bearer_token: None,
         }
     }
@@ -767,5 +771,55 @@ impl RuntimeSettings {
             tokens: config.tokens.clone(),
             moderation: config.moderation.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_config_path_must_exist() {
+        let missing = std::env::temp_dir().join(format!(
+            "midden-missing-config-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(AppConfig::load(Some(missing)).is_err());
+    }
+
+    #[test]
+    fn canonical_upload_limit_wins_over_legacy_tus_limit() {
+        let source = r#"
+            [limits]
+            max_upload_bytes = 1048576
+            max_tus_upload_bytes = 2147483648
+        "#;
+        let config: AppConfig = config::Config::builder()
+            .add_source(config::File::from_str(source, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(config.limits.max_upload_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn metrics_are_not_publicly_enabled_by_default() {
+        let metrics = MetricsConfig::default();
+        assert!(!metrics.enabled);
+        assert_ne!(metrics.access, MetricsAccessMode::Public);
+    }
+
+    #[test]
+    fn invalid_delivery_modes_are_rejected_by_config_validation() {
+        let mut config = AppConfig::default();
+        config.delivery.isolated_file_origin = true;
+        config.delivery.public_file_base_url = None;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.delivery.signed_internal_urls = true;
+        config.delivery.internal_url_secret = None;
+        assert!(config.validate().is_err());
     }
 }

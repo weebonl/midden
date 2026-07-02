@@ -26,11 +26,13 @@ pub struct AppState {
     pub mailer: Mailer,
     pub metrics: AppMetrics,
     pub rate_limiter: crate::rate_limit::RateLimiter,
+    pub upload_quota_lock: Arc<tokio::sync::Mutex<()>>,
     pub registry: Arc<Registry>,
 }
 
 impl AppState {
     pub async fn new(config: AppConfig) -> anyhow::Result<Self> {
+        config.validate()?;
         let db = Database::connect(&config).await?;
         let storage = BlobStorage::from_config(&config).await?;
         let templates = Templates::load(&config)?;
@@ -46,6 +48,7 @@ impl AppState {
             mailer,
             metrics,
             rate_limiter: crate::rate_limit::RateLimiter::default(),
+            upload_quota_lock: Arc::new(tokio::sync::Mutex::new(())),
             registry: Arc::new(registry),
         })
     }

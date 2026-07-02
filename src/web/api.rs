@@ -248,7 +248,7 @@ fn api_file_item(
         "url": file_url(state, settings, file),
         "raw_url": raw_url.clone(),
         "internal_url": signed_internal_raw_url(state, settings, file),
-        "thumbnail_url": file.thumbnail_hash.as_ref().map(|_| raw_url),
+        "thumbnail_url": file.thumbnail_hash.as_ref().map(|_| thumbnail_file_url(state, settings, file)),
         "filename": file.original_filename,
         "content_type": file.content_type,
         "size_bytes": file.size_bytes,
@@ -528,9 +528,13 @@ pub(super) async fn api_create_token(
     if !settings.features.api {
         return Err(AppError::Forbidden);
     }
-    let user = api_user(&state, &headers, "tokens:write")
+    let actor = api_authenticated_user(&state, &headers, "tokens:write")
         .await?
         .ok_or(AppError::Unauthorized)?;
+    if !requested_scopes_allowed(&actor.scopes, &input.scopes) {
+        return Err(AppError::Forbidden);
+    }
+    let user = actor.user;
     enforce_rate_limit(&state, &settings, "api_create_token", &headers, Some(&user)).await?;
     let expires_at = api_token_expires_at(&settings, input.expires_in_seconds)?;
     let token = format!("mdd_{}", util::secret_token());
@@ -551,6 +555,18 @@ pub(super) async fn api_create_token(
     Ok(axum::Json(
         serde_json::json!({ "token": token, "expires_at": expires_at }),
     ))
+}
+
+fn requested_scopes_allowed(caller_scopes: &[String], requested_scopes: &[String]) -> bool {
+    if caller_scopes.iter().any(|scope| scope == "*") {
+        return true;
+    }
+    requested_scopes.iter().all(|requested| {
+        requested != "*"
+            && caller_scopes
+                .iter()
+                .any(|caller| caller.as_str() == requested.as_str())
+    })
 }
 
 fn api_token_expires_at(

@@ -1,4 +1,6 @@
 use super::*;
+use axum_extra::extract::Form as HtmlForm;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AccountQuery {
@@ -211,15 +213,23 @@ pub(super) struct AccountBulkItemsForm {
 pub(super) async fn account_bulk_items(
     State(state): State<AppState>,
     jar: CookieJar,
-    axum::Form(form): axum::Form<AccountBulkItemsForm>,
+    HtmlForm(form): HtmlForm<AccountBulkItemsForm>,
 ) -> AppResult<Redirect> {
     let settings = state.settings().await?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
-    let file_ids = form.file_ids.unwrap_or_default();
-    let paste_ids = form.paste_ids.unwrap_or_default();
+    let file_ids = form
+        .file_ids
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let paste_ids = form
+        .paste_ids
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     match form.bulk_action.as_str() {
         "delete" => {
             for id in &file_ids {
@@ -229,9 +239,11 @@ pub(super) async fn account_bulk_items(
                     .db
                     .delete_file(&file.id, Some(&user.id), "account bulk delete")
                     .await?;
-                let remaining_refs = state.db.decrement_blob_ref(&deleted.blob_hash).await?;
-                if remaining_refs == 0 {
-                    state.storage.delete_blob(&deleted.blob_hash).await?;
+                if deleted.state == "active" {
+                    let remaining_refs = state.db.decrement_blob_ref(&deleted.blob_hash).await?;
+                    if remaining_refs == 0 {
+                        state.storage.delete_blob(&deleted.blob_hash).await?;
+                    }
                 }
             }
             for id in &paste_ids {
@@ -451,7 +463,8 @@ pub(super) async fn account_deactivate(
         .db
         .audit(Some(&user.id), "user.deactivated", &user.id, "account UI")
         .await?;
-    let cookie = session_cookie(&state, String::new(), Some(0));
+    let secure_cookies = state.settings().await?.security.secure_cookies;
+    let cookie = session_cookie(&state, String::new(), Some(0), secure_cookies);
     Ok((jar.remove(cookie), Redirect::to("/")).into_response())
 }
 

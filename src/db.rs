@@ -188,39 +188,32 @@ impl Database {
         }
         let now = util::now_ts();
         let key = format!("{action}:{identity}");
-        let row = self
-            .query("SELECT window_start, count FROM rate_limit_buckets WHERE key = ?")
-            .bind(&key)
-            .fetch_optional(&self.pool)
-            .await?;
-        let Some(row) = row else {
-            self.query(
-                "INSERT INTO rate_limit_buckets (key, window_start, count) VALUES (?, ?, 1)",
+        let reset_before = now.saturating_sub(config.window_seconds as i64);
+        let result = self
+            .query(
+                "INSERT INTO rate_limit_buckets (key, window_start, count)
+                 VALUES (?, ?, 1)
+                 ON CONFLICT(key) DO UPDATE SET
+                   window_start = CASE
+                     WHEN rate_limit_buckets.window_start <= ? THEN excluded.window_start
+                     ELSE rate_limit_buckets.window_start
+                   END,
+                   count = CASE
+                     WHEN rate_limit_buckets.window_start <= ? THEN 1
+                     ELSE rate_limit_buckets.count + 1
+                   END
+                 WHERE rate_limit_buckets.window_start <= ?
+                    OR rate_limit_buckets.count < ?",
             )
             .bind(&key)
             .bind(now)
+            .bind(reset_before)
+            .bind(reset_before)
+            .bind(reset_before)
+            .bind(i64::from(config.requests))
             .execute(&self.pool)
             .await?;
-            return Ok(true);
-        };
-        let window_start: i64 = row.try_get("window_start")?;
-        let count: i64 = row.try_get("count")?;
-        if now.saturating_sub(window_start) >= config.window_seconds as i64 {
-            self.query("UPDATE rate_limit_buckets SET window_start = ?, count = 1 WHERE key = ?")
-                .bind(now)
-                .bind(&key)
-                .execute(&self.pool)
-                .await?;
-            return Ok(true);
-        }
-        if count >= i64::from(config.requests) {
-            return Ok(false);
-        }
-        self.query("UPDATE rate_limit_buckets SET count = count + 1 WHERE key = ?")
-            .bind(&key)
-            .execute(&self.pool)
-            .await?;
-        Ok(true)
+        Ok(result.rows_affected() > 0)
     }
 }
 
@@ -270,9 +263,9 @@ mod tests {
         );
         assert_eq!(
             settings.metrics.access,
-            crate::config::MetricsAccessMode::Public
+            crate::config::MetricsAccessMode::Admin
         );
-        assert!(settings.metrics.enabled);
+        assert!(!settings.metrics.enabled);
         assert!(
             settings
                 .limits
@@ -339,6 +332,131 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(db.blob_ref_count("abc123").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn zero_ref_blobs_are_not_required_inventory() {
+        let db = test_db().await;
+        db.create_blob_if_missing("releasedhash", 4, Some("text/plain"))
+            .await
+            .unwrap();
+        db.create_file_item(NewFileItem {
+            id: "released-file",
+            public_id: "releasedpub",
+            blob_hash: "releasedhash",
+            original_filename: Some("released.txt"),
+            extension: Some("txt"),
+            content_type: Some("text/plain"),
+            size_bytes: 4,
+            image_width: None,
+            image_height: None,
+            owner_user_id: None,
+            delete_token_hash: None,
+            expires_at: None,
+            visibility: "unlisted",
+            metadata_json: None,
+            thumbnail_hash: None,
+            state: "active",
+        })
+        .await
+        .unwrap();
+
+        db.delete_file("released-file", None, "test release")
+            .await
+            .unwrap();
+        assert_eq!(db.decrement_blob_ref("releasedhash").await.unwrap(), 0);
+
+        assert!(
+            !db.blob_hashes()
+                .await
+                .unwrap()
+                .contains(&"releasedhash".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn scanner_retry_candidates_use_latest_scan_result() {
+        let db = test_db().await;
+        db.create_blob_if_missing("scanretryhash", 4, Some("text/plain"))
+            .await
+            .unwrap();
+        db.create_file_item(NewFileItem {
+            id: "scan-retry-file",
+            public_id: "scanretrypub",
+            blob_hash: "scanretryhash",
+            original_filename: Some("scan.txt"),
+            extension: Some("txt"),
+            content_type: Some("text/plain"),
+            size_bytes: 4,
+            image_width: None,
+            image_height: None,
+            owner_user_id: None,
+            delete_token_hash: None,
+            expires_at: None,
+            visibility: "unlisted",
+            metadata_json: None,
+            thumbnail_hash: None,
+            state: "active",
+        })
+        .await
+        .unwrap();
+        db.record_scan_result(
+            "file",
+            "scanretrypub",
+            "webhook",
+            "allow",
+            "webhook returned HTTP 500",
+        )
+        .await
+        .unwrap();
+        assert_eq!(db.scanner_retry_file_candidates(10).await.unwrap().len(), 1);
+
+        db.record_scan_result("file", "scanretrypub", "webhook", "allow", "clean")
+            .await
+            .unwrap();
+        assert!(
+            db.scanner_retry_file_candidates(10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn thumbnail_candidates_are_limited_to_supported_image_types() {
+        let db = test_db().await;
+        for (id, public_id, content_type) in [
+            ("thumb-text", "thumbtext", "text/plain"),
+            ("thumb-png", "thumbpng", "image/png"),
+        ] {
+            db.create_blob_if_missing(public_id, 4, Some(content_type))
+                .await
+                .unwrap();
+            db.create_file_item(NewFileItem {
+                id,
+                public_id,
+                blob_hash: public_id,
+                original_filename: Some("file"),
+                extension: None,
+                content_type: Some(content_type),
+                size_bytes: 4,
+                image_width: None,
+                image_height: None,
+                owner_user_id: None,
+                delete_token_hash: None,
+                expires_at: None,
+                visibility: "unlisted",
+                metadata_json: None,
+                thumbnail_hash: None,
+                state: "active",
+            })
+            .await
+            .unwrap();
+        }
+
+        let candidates = db.files_needing_processing(false, true, 10).await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].public_id, "thumbpng");
     }
 
     #[tokio::test]

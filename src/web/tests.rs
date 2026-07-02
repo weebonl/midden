@@ -4,6 +4,7 @@ use axum::body::Body;
 use http::Request;
 use http_body_util::BodyExt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -81,7 +82,11 @@ async fn spawn_http_app(state: AppState) -> String {
     let addr = listener.local_addr().unwrap();
     let router = state.router();
     tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
     });
     format!("http://{addr}")
 }
@@ -125,8 +130,6 @@ fn hex_fixture(input: &str) -> Vec<u8> {
         })
         .collect()
 }
-
-
 
 fn csrf_cookie_from(headers: &reqwest::header::HeaderMap) -> String {
     headers
@@ -284,6 +287,7 @@ fn admin_settings_form_body(csrf: &str, oidc_login: bool, local_login: bool) -> 
 async fn admin_ui_exposes_wide_shell_and_settings_affordances() {
     let (state, session_token) = admin_session_state().await;
     let response = state
+        .clone()
         .router()
         .oneshot(
             Request::builder()
@@ -301,6 +305,9 @@ async fn admin_ui_exposes_wide_shell_and_settings_affordances() {
     assert!(body.contains("class=\"admin-nav\""));
     assert!(body.contains("data-admin-settings-form"));
     assert!(body.contains("class=\"settings-tabs\""));
+    assert!(body.contains("role=\"tablist\""));
+    assert!(body.contains("aria-selected"));
+    assert!(body.contains("role=\"tabpanel\""));
     assert!(body.contains("class=\"settings-save-bar\""));
     assert!(body.contains("data-settings-section=\"features\""));
     assert!(body.contains("data-secret-input"));
@@ -413,6 +420,7 @@ async fn static_assets_include_frontend_ux_helpers() {
     assert!(css.contains(".drop-zone:focus-within"));
     assert!(css.contains("input[type=\"checkbox\"]"));
     assert!(css.contains("inline-size: auto"));
+    assert!(css.contains("}\n\n.settings-tabs"));
 
     let js_response = router
         .oneshot(
@@ -430,6 +438,9 @@ async fn static_assets_include_frontend_ux_helpers() {
     assert!(js.contains("data-secret-toggle"));
     assert!(js.contains("midden:settings-section:"));
     assert!(js.contains("data-upload-cancel"));
+    assert!(js.contains("function storedLocation"));
+    assert!(js.contains("Copy failed"));
+    assert!(js.contains("Promise.reject"));
 }
 
 #[tokio::test]
@@ -801,11 +812,21 @@ async fn file_delivery_handles_range_requests() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        response.headers().get(header::ACCEPT_RANGES).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::ACCEPT_RANGES)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "bytes"
     );
     assert_eq!(
-        response.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "16"
     );
     let body = response_body(response).await;
@@ -826,15 +847,30 @@ async fn file_delivery_handles_range_requests() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
-        response.headers().get(header::ACCEPT_RANGES).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::ACCEPT_RANGES)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "bytes"
     );
     assert_eq!(
-        response.headers().get(header::CONTENT_RANGE).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "bytes 0-4/16"
     );
     assert_eq!(
-        response.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "5"
     );
     let body = response_body(response).await;
@@ -855,11 +891,21 @@ async fn file_delivery_handles_range_requests() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
-        response.headers().get(header::CONTENT_RANGE).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "bytes 10-15/16"
     );
     assert_eq!(
-        response.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "6"
     );
     let body = response_body(response).await;
@@ -879,7 +925,12 @@ async fn file_delivery_handles_range_requests() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(
-        response.headers().get(header::CONTENT_RANGE).unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "bytes */16"
     );
 }
@@ -1062,6 +1113,7 @@ async fn operational_controls_cover_upload_mime_metrics_and_rate_limits() {
     .await;
     let state = test_state(issuer).await;
     let mut settings = state.settings().await.unwrap();
+    settings.metrics.enabled = true;
     settings.metrics.access = crate::config::MetricsAccessMode::Admin;
     settings
         .security
@@ -1138,6 +1190,50 @@ async fn operational_controls_cover_upload_mime_metrics_and_rate_limits() {
             .unwrap()
             .starts_with("attachment")
     );
+}
+
+#[tokio::test]
+async fn rate_limits_ignore_spoofed_real_ip_without_proxy_mode() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut settings = state.settings().await.unwrap();
+    settings.security.rate_limits.insert(
+        "api_upload_file".to_string(),
+        crate::config::RateLimitConfig {
+            requests: 1,
+            window_seconds: 60,
+            enabled: true,
+        },
+    );
+    state
+        .db
+        .set_json_setting("security", &settings.security)
+        .await
+        .unwrap();
+    let base = spawn_http_app(state).await;
+    let client = reqwest::Client::new();
+
+    for (index, spoofed_ip) in ["198.51.100.10", "198.51.100.11"].into_iter().enumerate() {
+        let response = client
+            .post(format!("{base}/api/v1/files"))
+            .header("x-real-ip", spoofed_ip)
+            .multipart(
+                reqwest::multipart::Form::new().part(
+                    "file",
+                    reqwest::multipart::Part::bytes(format!("file-{index}").into_bytes())
+                        .file_name(format!("file-{index}.txt"))
+                        .mime_str("text/plain")
+                        .unwrap(),
+                ),
+            )
+            .send()
+            .await
+            .unwrap();
+        if index == 0 {
+            assert_eq!(response.status(), StatusCode::OK);
+        } else {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
 }
 
 #[tokio::test]
@@ -1312,6 +1408,463 @@ async fn http_release_flow_covers_upload_paste_claim_reports_admin_search_and_sc
 }
 
 #[tokio::test]
+async fn invite_only_registration_with_invalid_token_does_not_create_user() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut policy = state.settings().await.unwrap().policy;
+    policy.signup = crate::config::SignupMode::InviteOnly;
+    state.db.set_json_setting("policy", &policy).await.unwrap();
+    let csrf = util::secret_token();
+
+    let response = state
+        .clone()
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/register")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("midden_csrf={csrf}"))
+                .body(Body::from(format!(
+                    "email=invite-bypass%40example.test&username=invite-bypass&password=correct%20horse&invite_token=bad-token&csrf_token={csrf}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        state
+            .db
+            .user_by_email("invite-bypass@example.test")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn scoped_api_token_cannot_mint_broader_token() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let base = spawn_http_app(state.clone()).await;
+    let client = reqwest::Client::new();
+    let (_user, token) = user_with_api_token(
+        &state,
+        "scope-user@example.test",
+        "scope-user",
+        Role::User,
+        &["tokens:write"],
+    )
+    .await;
+
+    let response = client
+        .post(format!("{base}/api/v1/tokens"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "name": "escalated", "scopes": ["*"] }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_disabled_blocks_admin_api_routes() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut features = state.settings().await.unwrap().features;
+    features.api = false;
+    state
+        .db
+        .set_json_setting("features", &features)
+        .await
+        .unwrap();
+    let base = spawn_http_app(state.clone()).await;
+    let client = reqwest::Client::new();
+    let (_admin, token) = user_with_api_token(
+        &state,
+        "disabled-api-admin@example.test",
+        "disabled-api-admin",
+        Role::Admin,
+        &["admin:reports", "admin:search"],
+    )
+    .await;
+
+    for path in ["/api/v1/admin/reports", "/api/v1/admin/search?q=test"] {
+        let response = client
+            .get(format!("{base}{path}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[tokio::test]
+async fn admins_cannot_mutate_owner_accounts() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let owner = state
+        .db
+        .create_user(
+            "owner@example.test",
+            "owner-user",
+            Some("hash"),
+            Role::Owner,
+        )
+        .await
+        .unwrap();
+    let admin = state
+        .db
+        .create_user(
+            "actor@example.test",
+            "actor-admin",
+            Some("hash"),
+            Role::Admin,
+        )
+        .await
+        .unwrap();
+    let session_token = util::secret_token();
+    state
+        .db
+        .create_session(
+            &admin.id,
+            &util::hash_token(&session_token),
+            util::now_ts() + 60,
+        )
+        .await
+        .unwrap();
+    let csrf = util::secret_token();
+    let router = state.clone().router();
+
+    let role_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/users/{}/role", owner.id))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    header::COOKIE,
+                    format!("midden_session={session_token}; midden_csrf={csrf}"),
+                )
+                .body(Body::from(format!("role=admin&csrf_token={csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(role_response.status(), StatusCode::FORBIDDEN);
+
+    let disable_response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/users/{}/disable", owner.id))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    header::COOKIE,
+                    format!("midden_session={session_token}; midden_csrf={csrf}"),
+                )
+                .body(Body::from(format!("csrf_token={csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disable_response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn loopback_metrics_requires_real_loopback_client() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut metrics = state.settings().await.unwrap().metrics;
+    metrics.enabled = true;
+    metrics.access = crate::config::MetricsAccessMode::Loopback;
+    state
+        .db
+        .set_json_setting("metrics", &metrics)
+        .await
+        .unwrap();
+
+    let response = state
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn secure_cookie_runtime_setting_applies_to_all_auth_cookies() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut security = state.settings().await.unwrap().security;
+    security.secure_cookies = true;
+    state
+        .db
+        .set_json_setting("security", &security)
+        .await
+        .unwrap();
+
+    let csrf_response = state
+        .clone()
+        .router()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        csrf_response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|cookie| cookie.starts_with("midden_csrf=") && cookie.contains("Secure"))
+    );
+
+    let user = state
+        .db
+        .create_user(
+            "secure-cookie@example.test",
+            "secure-cookie",
+            Some(&util::hash_password("correct horse").unwrap()),
+            Role::User,
+        )
+        .await
+        .unwrap();
+    let session = create_session_response(&state, CookieJar::new(), &user)
+        .await
+        .unwrap();
+    assert!(
+        session
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|cookie| cookie.starts_with("midden_session=") && cookie.contains("Secure"))
+    );
+}
+
+#[tokio::test]
+async fn oidc_login_uses_secure_runtime_setting_for_transient_cookies() {
+    let issuer = spawn_oidc_provider(serde_json::json!({
+        "sub": "secure-transient",
+        "email": "secure-transient@example.test",
+        "groups": ["admins"]
+    }))
+    .await;
+    let state = test_state(issuer).await;
+    let mut security = state.settings().await.unwrap().security;
+    security.secure_cookies = true;
+    state
+        .db
+        .set_json_setting("security", &security)
+        .await
+        .unwrap();
+
+    let response = state
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/oidc/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookies = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>();
+    for name in [
+        "midden_oidc_state",
+        "midden_oidc_nonce",
+        "midden_oidc_purpose",
+    ] {
+        assert!(
+            cookies
+                .iter()
+                .any(|cookie| cookie.starts_with(&format!("{name}=")) && cookie.contains("Secure")),
+            "{name} cookie should be Secure"
+        );
+    }
+}
+
+#[tokio::test]
+async fn private_raw_files_are_not_public_cacheable() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let user = state
+        .db
+        .create_user(
+            "private-cache@example.test",
+            "private-cache",
+            Some("hash"),
+            Role::User,
+        )
+        .await
+        .unwrap();
+    let bytes = Bytes::from_static(b"private cache");
+    let hash = util::sha256_hex_bytes(&bytes);
+    state
+        .db
+        .create_blob_if_missing(&hash, bytes.len() as i64, Some("text/plain"))
+        .await
+        .unwrap();
+    state.storage.put_blob(&hash, bytes).await.unwrap();
+    state
+        .db
+        .create_file_item(NewFileItem {
+            id: &uuid::Uuid::new_v4().to_string(),
+            public_id: "private-cache-file",
+            blob_hash: &hash,
+            original_filename: Some("private.txt"),
+            extension: Some("txt"),
+            content_type: Some("text/plain"),
+            size_bytes: 13,
+            image_width: None,
+            image_height: None,
+            owner_user_id: Some(&user.id),
+            delete_token_hash: None,
+            expires_at: None,
+            visibility: "private",
+            metadata_json: None,
+            thumbnail_hash: None,
+            state: "active",
+        })
+        .await
+        .unwrap();
+    let session_token = util::secret_token();
+    state
+        .db
+        .create_session(
+            &user.id,
+            &util::hash_token(&session_token),
+            util::now_ts() + 60,
+        )
+        .await
+        .unwrap();
+
+    let response = state
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/files/private-cache-file/raw")
+                .header(header::COOKIE, format!("midden_session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_ne!(
+        response.headers()[header::CACHE_CONTROL].to_str().unwrap(),
+        "public, max-age=31536000"
+    );
+    assert!(
+        response.headers()[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("private")
+    );
+}
+
+#[tokio::test]
+async fn account_bulk_delete_dedupes_file_ids_before_releasing_blobs() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let user = state
+        .db
+        .create_user(
+            "bulk-owner@example.test",
+            "bulk-owner",
+            Some("hash"),
+            Role::User,
+        )
+        .await
+        .unwrap();
+    let bytes = Bytes::from_static(b"shared bytes");
+    let hash = util::sha256_hex_bytes(&bytes);
+    state
+        .db
+        .create_blob_if_missing(&hash, bytes.len() as i64, Some("text/plain"))
+        .await
+        .unwrap();
+    state.storage.put_blob(&hash, bytes).await.unwrap();
+    for public_id in ["bulk-one", "bulk-two"] {
+        state
+            .db
+            .create_file_item(NewFileItem {
+                id: &uuid::Uuid::new_v4().to_string(),
+                public_id,
+                blob_hash: &hash,
+                original_filename: Some("bulk.txt"),
+                extension: Some("txt"),
+                content_type: Some("text/plain"),
+                size_bytes: 12,
+                image_width: None,
+                image_height: None,
+                owner_user_id: Some(&user.id),
+                delete_token_hash: None,
+                expires_at: None,
+                visibility: "unlisted",
+                metadata_json: None,
+                thumbnail_hash: None,
+                state: "active",
+            })
+            .await
+            .unwrap();
+    }
+    let session_token = util::secret_token();
+    state
+        .db
+        .create_session(
+            &user.id,
+            &util::hash_token(&session_token),
+            util::now_ts() + 60,
+        )
+        .await
+        .unwrap();
+    let csrf = util::secret_token();
+
+    let response = state
+        .clone()
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/account/items/bulk")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    header::COOKIE,
+                    format!("midden_session={session_token}; midden_csrf={csrf}"),
+                )
+                .body(Body::from(format!(
+                    "bulk_action=delete&file_ids=bulk-one&file_ids=bulk-one&csrf_token={csrf}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(state.db.blob_ref_count(&hash).await.unwrap(), 1);
+    assert!(state.storage.exists(&hash).await.unwrap());
+    assert!(
+        state
+            .db
+            .active_file_by_public_id("bulk-two")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn account_token_jobs_and_thumbnail_surfaces_are_available() {
     let issuer = spawn_oidc_provider(serde_json::json!({
         "sub": "unused-surfaces",
@@ -1359,6 +1912,9 @@ async fn account_token_jobs_and_thumbnail_surfaces_are_available() {
     assert_eq!(account.status(), StatusCode::OK);
     let account = account.text().await.unwrap();
     assert!(account.contains("name=\"bulk_action\""));
+    assert!(account.contains("Delete selected items?"));
+    assert!(account.contains("role=\"tablist\""));
+    assert!(account.contains("aria-selected"));
     assert!(account.contains("name=\"expires_in_seconds\""));
 
     let jobs = client
@@ -1415,8 +1971,206 @@ async fn account_token_jobs_and_thumbnail_surfaces_are_available() {
         file.thumbnail_hash.as_deref(),
         Some(file.blob_hash.as_str())
     );
+
+    let files = client
+        .get(format!("{base}/api/v1/me/files"))
+        .bearer_auth(&admin_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(files.status(), StatusCode::OK);
+    let files: serde_json::Value = files.json().await.unwrap();
+    let item = files["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(file_id.as_str()))
+        .unwrap();
+    let raw_url = item["raw_url"].as_str().unwrap();
+    let thumbnail_url = item["thumbnail_url"].as_str().unwrap();
+    assert_ne!(thumbnail_url, raw_url);
+
+    let thumbnail_path = url::Url::parse(thumbnail_url).unwrap().path().to_string();
+    let thumbnail = client
+        .get(format!("{base}{thumbnail_path}"))
+        .bearer_auth(&admin_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(thumbnail.status(), StatusCode::OK);
+    assert_eq!(
+        thumbnail.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+        "image/png"
+    );
 }
 
+#[tokio::test]
+async fn quarantined_uploads_count_toward_usage_and_expire() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut settings = state.settings().await.unwrap();
+    settings.scanning.enabled = true;
+    settings.scanning.adapters = vec![crate::config::ScannerAdapterConfig::Command {
+        program: "sh".to_string(),
+        args: vec!["-c".to_string(), "exit 10".to_string()],
+    }];
+    state
+        .db
+        .set_json_setting("scanning", &settings.scanning)
+        .await
+        .unwrap();
+    let (user, token) = user_with_api_token(
+        &state,
+        "quarantine-owner@example.test",
+        "quarantine-owner",
+        Role::User,
+        &["files:write"],
+    )
+    .await;
+    let base = spawn_http_app(state.clone()).await;
+    let client = reqwest::Client::new();
+
+    let upload = client
+        .post(format!("{base}/api/v1/files"))
+        .bearer_auth(&token)
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(b"quarantine me".to_vec())
+                    .file_name("quarantine-me.txt")
+                    .mime_str("text/plain")
+                    .unwrap(),
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), StatusCode::BAD_REQUEST);
+
+    let files = state.db.admin_search_files("quarantine-me").await.unwrap();
+    assert_eq!(files.len(), 1);
+    let file = &files[0];
+    assert_eq!(file.state, "quarantined");
+    assert_eq!(
+        state
+            .db
+            .file_usage_for_user(Some(&user.id))
+            .await
+            .unwrap()
+            .storage_bytes,
+        file.size_bytes
+    );
+
+    state
+        .db
+        .set_file_expiry(&file.public_id, &user.id, Some(util::now_ts() - 1))
+        .await
+        .unwrap();
+    let summary = jobs::cleanup_expired(&state).await.unwrap();
+    assert_eq!(summary.expired_files, 1);
+    assert!(!state.storage.exists(&file.blob_hash).await.unwrap());
+}
+
+#[tokio::test]
+async fn concurrent_uploads_cannot_race_past_storage_quota() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let (user, token) = user_with_api_token(
+        &state,
+        "quota-race@example.test",
+        "quota-race",
+        Role::User,
+        &["files:write"],
+    )
+    .await;
+    let mut limits = state.settings().await.unwrap().limits;
+    limits.role_quotas.insert(
+        "user".to_string(),
+        crate::config::QuotaConfig {
+            storage_bytes: Some(11),
+            ..Default::default()
+        },
+    );
+    state.db.set_json_setting("limits", &limits).await.unwrap();
+    let base = spawn_http_app(state.clone()).await;
+    let client = reqwest::Client::new();
+
+    let upload_a = client
+        .post(format!("{base}/api/v1/files"))
+        .bearer_auth(&token)
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(b"aaaaaa".to_vec())
+                    .file_name("a.txt")
+                    .mime_str("text/plain")
+                    .unwrap(),
+            ),
+        )
+        .send();
+    let upload_b = client
+        .post(format!("{base}/api/v1/files"))
+        .bearer_auth(&token)
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(b"bbbbbb".to_vec())
+                    .file_name("b.txt")
+                    .mime_str("text/plain")
+                    .unwrap(),
+            ),
+        )
+        .send();
+
+    let (response_a, response_b) = tokio::join!(upload_a, upload_b);
+    let mut statuses = vec![response_a.unwrap().status(), response_b.unwrap().status()];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        vec![StatusCode::OK, StatusCode::PAYLOAD_TOO_LARGE]
+    );
+
+    let usage = state.db.file_usage_for_user(Some(&user.id)).await.unwrap();
+    assert_eq!(usage.storage_bytes, 6);
+    assert_eq!(usage.item_count, 1);
+}
+
+#[tokio::test]
+async fn url_upload_stops_streaming_after_response_byte_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let chunks_written = Arc::new(AtomicUsize::new(0));
+    let chunks_for_task = chunks_written.clone();
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer).await;
+        let headers = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nconnection: close\r\n\r\n";
+        if stream.write_all(headers.as_bytes()).await.is_err() {
+            return;
+        }
+        for _ in 0..10 {
+            if stream.write_all(b"abcd").await.is_err() {
+                return;
+            }
+            chunks_for_task.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    let mut settings = RuntimeSettings::from_config(&crate::config::AppConfig::default());
+    settings.security.url_upload.block_private_ips = false;
+    settings.security.url_upload.max_response_bytes = Some(8);
+    let result = fetch_url_upload(
+        &settings,
+        url::Url::parse(&format!("http://{addr}/")).unwrap(),
+    )
+    .await;
+
+    assert!(matches!(result, Err(AppError::PayloadTooLarge)));
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    assert!(chunks_written.load(Ordering::SeqCst) < 10);
+}
 
 #[tokio::test]
 async fn public_browse_only_lists_items_marked_public() {
@@ -1890,7 +2644,6 @@ async fn unauthenticated_paste_shows_notice() {
     assert!(body.contains("An account is required to create pastes on this instance."));
     assert!(!body.contains("Create paste"));
 }
-
 
 #[tokio::test]
 async fn test_local_login_disabled_blocks_endpoints() {

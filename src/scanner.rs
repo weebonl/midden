@@ -30,7 +30,9 @@ pub struct ScanSummary {
 
 #[derive(Debug, Clone)]
 pub struct ScanInput<'a> {
-    pub bytes: &'a Bytes,
+    pub bytes: Option<&'a Bytes>,
+    pub path: Option<&'a Path>,
+    pub size_bytes: i64,
     pub filename: Option<&'a str>,
     pub content_type: Option<&'a str>,
     pub hash: &'a str,
@@ -77,18 +79,27 @@ async fn run_command_scanner(
     input: &ScanInput<'_>,
     default_on_error: ScanDecision,
 ) -> ScanReport {
-    let temp_path = scanner_temp_path(input.temp_dir, input.public_id);
-    let result = async {
-        if let Some(parent) = temp_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+    let mut cleanup_path = None;
+    let scan_path = match input.path {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let temp_path = scanner_temp_path(input.temp_dir, input.public_id);
+            cleanup_path = Some(temp_path.clone());
+            temp_path
         }
-        tokio::fs::write(&temp_path, input.bytes).await?;
+    };
+    let result = async {
+        if input.path.is_none() {
+            if let Some(parent) = scan_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            write_input_to_path(input, &scan_path).await?;
+        }
         let mut command = Command::new(program);
         for arg in args {
-            command.arg(expand_arg(arg, input, &temp_path));
+            command.arg(expand_arg(arg, input, &scan_path));
         }
         let output = command.output().await?;
-        let _ = tokio::fs::remove_file(&temp_path).await;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = format!(
@@ -106,6 +117,10 @@ async fn run_command_scanner(
         anyhow::Ok((decision, detail))
     }
     .await;
+
+    if let Some(path) = cleanup_path {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 
     match result {
         Ok((decision, detail)) => ScanReport {
@@ -146,7 +161,7 @@ async fn run_webhook_scanner(
     let mut request = client.post(url).json(&WebhookScanRequest {
         filename: input.filename,
         content_type: input.content_type,
-        size_bytes: input.bytes.len(),
+        size_bytes: input.size_bytes.max(0) as usize,
         sha256: input.hash,
         public_id: input.public_id,
     });
@@ -189,9 +204,9 @@ async fn run_clamav_scanner(
     default_on_error: ScanDecision,
 ) -> ScanReport {
     let result = if socket.contains(':') {
-        scan_clamav_tcp(socket, input.bytes).await
+        scan_clamav_tcp(socket, input).await
     } else {
-        scan_clamav_unix(socket, input.bytes).await
+        scan_clamav_unix(socket, input).await
     };
 
     match result {
@@ -217,37 +232,71 @@ async fn run_clamav_scanner(
     }
 }
 
-async fn scan_clamav_tcp(addr: &str, bytes: &Bytes) -> anyhow::Result<String> {
+async fn scan_clamav_tcp(addr: &str, input: &ScanInput<'_>) -> anyhow::Result<String> {
     let mut stream = tokio::net::TcpStream::connect(addr).await?;
-    write_clamav_instream(&mut stream, bytes).await?;
+    write_clamav_instream(&mut stream, input).await?;
     read_clamav_response(&mut stream).await
 }
 
 #[cfg(unix)]
-async fn scan_clamav_unix(path: &str, bytes: &Bytes) -> anyhow::Result<String> {
+async fn scan_clamav_unix(path: &str, input: &ScanInput<'_>) -> anyhow::Result<String> {
     let mut stream = tokio::net::UnixStream::connect(path).await?;
-    write_clamav_instream(&mut stream, bytes).await?;
+    write_clamav_instream(&mut stream, input).await?;
     read_clamav_response(&mut stream).await
 }
 
 #[cfg(not(unix))]
-async fn scan_clamav_unix(_path: &str, _bytes: &Bytes) -> anyhow::Result<String> {
+async fn scan_clamav_unix(_path: &str, _input: &ScanInput<'_>) -> anyhow::Result<String> {
     anyhow::bail!("unix ClamAV sockets are not supported on this platform")
 }
 
-async fn write_clamav_instream<W>(stream: &mut W, bytes: &Bytes) -> anyhow::Result<()>
+async fn write_input_to_path(input: &ScanInput<'_>, path: &Path) -> anyhow::Result<()> {
+    if let Some(bytes) = input.bytes {
+        tokio::fs::write(path, bytes).await?;
+        return Ok(());
+    }
+    if let Some(source) = input.path {
+        tokio::fs::copy(source, path).await?;
+        return Ok(());
+    }
+    anyhow::bail!("scanner input has no bytes or path")
+}
+
+async fn write_clamav_instream<W>(stream: &mut W, input: &ScanInput<'_>) -> anyhow::Result<()>
 where
     W: AsyncWriteExt + Unpin,
 {
     stream.write_all(b"zINSTREAM\0").await?;
-    for chunk in bytes.chunks(1024 * 1024) {
-        stream
-            .write_all(&(chunk.len() as u32).to_be_bytes())
-            .await?;
-        stream.write_all(chunk).await?;
+    if let Some(bytes) = input.bytes {
+        for chunk in bytes.chunks(1024 * 1024) {
+            write_clamav_chunk(stream, chunk).await?;
+        }
+    } else if let Some(path) = input.path {
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            write_clamav_chunk(stream, &buffer[..read]).await?;
+        }
+    } else {
+        anyhow::bail!("scanner input has no bytes or path");
     }
     stream.write_all(&0_u32.to_be_bytes()).await?;
     stream.flush().await?;
+    Ok(())
+}
+
+async fn write_clamav_chunk<W>(stream: &mut W, chunk: &[u8]) -> anyhow::Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    stream
+        .write_all(&(chunk.len() as u32).to_be_bytes())
+        .await?;
+    stream.write_all(chunk).await?;
     Ok(())
 }
 
@@ -299,7 +348,9 @@ mod tests {
         let summary = scan_upload(
             &config,
             ScanInput {
-                bytes: &bytes,
+                bytes: Some(&bytes),
+                path: None,
+                size_bytes: bytes.len() as i64,
                 filename: Some("hello.txt"),
                 content_type: Some("text/plain"),
                 hash: "abc",

@@ -44,9 +44,11 @@ async fn start(state: AppState, jar: CookieJar, purpose: &'static str) -> AppRes
         .append_pair("state", &state_token)
         .append_pair("nonce", &nonce);
 
-    let state_cookie = transient_cookie("midden_oidc_state", state_token);
-    let nonce_cookie = transient_cookie("midden_oidc_nonce", nonce);
-    let purpose_cookie = transient_cookie("midden_oidc_purpose", purpose.to_string());
+    let secure_cookies = settings.security.secure_cookies;
+    let state_cookie = transient_cookie("midden_oidc_state", state_token, secure_cookies);
+    let nonce_cookie = transient_cookie("midden_oidc_nonce", nonce, secure_cookies);
+    let purpose_cookie =
+        transient_cookie("midden_oidc_purpose", purpose.to_string(), secure_cookies);
     Ok((
         jar.add(state_cookie).add(nonce_cookie).add(purpose_cookie),
         Redirect::to(url.as_str()),
@@ -102,7 +104,7 @@ pub(super) async fn callback(
         .get("midden_oidc_purpose")
         .map(|cookie| cookie.value().to_string())
         .unwrap_or_else(|| "login".to_string());
-    let jar = clear_cookies(jar);
+    let jar = clear_cookies(jar, settings.security.secure_cookies);
     if purpose == "link" {
         let user = current_user(&state, &jar)
             .await?
@@ -137,10 +139,22 @@ pub(super) async fn callback(
     create_session_response(&state, jar, &user).await
 }
 
-fn clear_cookies(jar: CookieJar) -> CookieJar {
-    jar.remove(transient_cookie("midden_oidc_state", String::new()))
-        .remove(transient_cookie("midden_oidc_nonce", String::new()))
-        .remove(transient_cookie("midden_oidc_purpose", String::new()))
+fn clear_cookies(jar: CookieJar, secure_cookies: bool) -> CookieJar {
+    jar.remove(transient_cookie(
+        "midden_oidc_state",
+        String::new(),
+        secure_cookies,
+    ))
+    .remove(transient_cookie(
+        "midden_oidc_nonce",
+        String::new(),
+        secure_cookies,
+    ))
+    .remove(transient_cookie(
+        "midden_oidc_purpose",
+        String::new(),
+        secure_cookies,
+    ))
 }
 
 async fn resolve_login_user(
