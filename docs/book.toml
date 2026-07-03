@@ -1,0 +1,17 @@
+[book]
+authors = ["Midden contributors"]
+language = "en"
+src = "src"
+title = "Midden Documentation"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/weebonl/midden"
+edit-url-template = "https://github.com/weebonl/midden/edit/main/docs/{path}"
+site-url = "/midden/"
+
+[output.html.search]
+enable = true
