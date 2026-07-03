@@ -4,6 +4,9 @@ version = "0.6.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "A self-hostable Rust file and paste sharing service."
+repository = "https://github.com/weebonl/midden"
+homepage = "https://weebonl.github.io/midden/"
+documentation = "https://weebonl.github.io/midden/"
 
 [lints.rust]
 unsafe_code = "deny"
