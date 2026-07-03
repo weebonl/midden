@@ -4,6 +4,7 @@
   <h2>Two-factor authentication</h2>
   <p>Enter the code sent to your email address.</p>
   <form method="post" action="/auth/2fa">
+    {% include "csrf_field.html" %}
     <p><label>Code<br><input name="code" required autocomplete="one-time-code" autofocus></label></p>
     <p><button type="submit">Continue</button></p>
   </form>

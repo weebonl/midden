@@ -4,6 +4,7 @@
   <h2>Report {{ page.kind }} {{ page.id }}</h2>
   <p class="field-note">Send enough detail for a moderator to identify the issue. Reports go to the instance operator.</p>
   <form method="post" action="/report/{{ page.kind }}/{{ page.id }}">
+    {% include "csrf_field.html" %}
     <p><label>Reason<br><input name="reason" required></label></p>
     <p><label>Details<br><textarea name="details" rows="8"></textarea></label></p>
     <p><button type="submit">Send report</button></p>

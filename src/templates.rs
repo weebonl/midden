@@ -34,12 +34,14 @@ impl Templates {
         name: &str,
         settings: &RuntimeSettings,
         current_user: Option<&crate::db::User>,
+        csrf_token: Option<&str>,
         value: S,
     ) -> anyhow::Result<String> {
         let template = self.env.get_template(name)?;
         Ok(template.render(context! {
             settings => settings,
             current_user => current_user,
+            csrf_token => csrf_token,
             page => value,
             version => env!("CARGO_PKG_VERSION"),
         })?)
@@ -61,6 +63,10 @@ fn override_or_builtin(
 }
 
 const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "csrf_field.html",
+        include_str!("../templates/csrf_field.html"),
+    ),
     ("base.html", include_str!("../templates/base.html")),
     ("index.html", include_str!("../templates/index.html")),
     ("browse.html", include_str!("../templates/browse.html")),

@@ -144,10 +144,15 @@ pub(super) fn render<S: Serialize>(
     current_user: Option<&User>,
     page: S,
 ) -> AppResult<Html<String>> {
+    let csrf_token = REQUEST_CONTEXT
+        .try_with(|ctx| ctx.csrf_token.clone())
+        .ok()
+        .flatten();
     Ok(Html(state.templates.render(
         name,
         settings,
         current_user,
+        csrf_token.as_deref(),
         page,
     )?))
 }
@@ -167,6 +172,22 @@ pub(super) async fn current_user(state: &AppState, jar: &CookieJar) -> AppResult
         .db
         .user_by_session_token(&util::hash_token(cookie.value()))
         .await?)
+}
+
+pub(super) fn ensure_accounts_enabled(settings: &RuntimeSettings) -> AppResult<()> {
+    if settings.features.accounts {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden)
+    }
+}
+
+pub(super) fn ensure_local_accounts_enabled(settings: &RuntimeSettings) -> AppResult<()> {
+    if settings.features.accounts && settings.features.local_login {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden)
+    }
 }
 
 pub(super) fn validate_csrf(jar: &CookieJar, submitted: Option<&str>) -> AppResult<()> {

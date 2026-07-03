@@ -3,6 +3,7 @@
 {% block content %}
   <h2>Register</h2>
   <form method="post" action="/register">
+    {% include "csrf_field.html" %}
     <p><label>Email<br><input type="email" name="email" autocomplete="email" required></label></p>
     <p><label>Username<br><input name="username" autocomplete="username" required></label></p>
     <p><label>Password<br><input type="password" name="password" autocomplete="new-password" required></label></p>

@@ -217,11 +217,10 @@ impl<'de> Deserialize<'de> for LimitsConfig {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize, Default)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         struct RawLimitsConfig {
             max_upload_bytes: Option<i64>,
             max_paste_bytes: Option<i64>,
-            max_tus_upload_bytes: Option<i64>,
             anonymous_daily_bytes: Option<i64>,
             default_file_expiry: Option<String>,
             default_paste_expiry: Option<String>,
@@ -232,15 +231,9 @@ impl<'de> Deserialize<'de> for LimitsConfig {
 
         let raw = RawLimitsConfig::deserialize(deserializer)?;
         let default = LimitsConfig::default();
-        let max_upload_bytes = match (raw.max_upload_bytes, raw.max_tus_upload_bytes) {
-            (Some(upload), Some(_legacy_tus)) => upload,
-            (Some(upload), None) => upload,
-            (None, Some(legacy_tus)) => legacy_tus,
-            (None, None) => default.max_upload_bytes,
-        };
 
         Ok(Self {
-            max_upload_bytes,
+            max_upload_bytes: raw.max_upload_bytes.unwrap_or(default.max_upload_bytes),
             max_paste_bytes: raw.max_paste_bytes.unwrap_or(default.max_paste_bytes),
             anonymous_daily_bytes: raw.anonymous_daily_bytes,
             default_file_expiry: raw.default_file_expiry,
@@ -788,19 +781,17 @@ mod tests {
     }
 
     #[test]
-    fn canonical_upload_limit_wins_over_legacy_tus_limit() {
+    fn unknown_limit_fields_are_rejected() {
         let source = r#"
             [limits]
-            max_upload_bytes = 1048576
-            max_tus_upload_bytes = 2147483648
+            obsolete_upload_limit_bytes = 2147483648
         "#;
-        let config: AppConfig = config::Config::builder()
+        let result = config::Config::builder()
             .add_source(config::File::from_str(source, config::FileFormat::Toml))
             .build()
             .unwrap()
-            .try_deserialize()
-            .unwrap();
-        assert_eq!(config.limits.max_upload_bytes, 1_048_576);
+            .try_deserialize::<AppConfig>();
+        assert!(result.is_err());
     }
 
     #[test]

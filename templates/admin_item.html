@@ -30,6 +30,7 @@
   <section class="moderation-panel">
     <h3>Moderation action</h3>
     <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+      {% include "csrf_field.html" %}
       <p><label>State<br>
         <select name="state">
           <option value="active" {% if page.item.state == "active" %}selected{% endif %}>active</option>
@@ -43,6 +44,7 @@
     </form>
 
     <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+      {% include "csrf_field.html" %}
       <p><label>Visibility<br>
         <select name="visibility">
           <option value="unlisted" {% if page.item.visibility == "unlisted" %}selected{% endif %}>unlisted</option>
@@ -54,6 +56,7 @@
     </form>
 
     <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}">
+      {% include "csrf_field.html" %}
       <p><label>Moderator note<br><textarea name="note" rows="4"></textarea></label></p>
       <p><button type="submit" name="action" value="add_note">Add note</button></p>
     </form>
@@ -74,6 +77,7 @@
   <h3>Notes</h3>
   {% if page.kind == "file" %}
     <form method="post" action="/admin/items/{{ page.kind }}/{{ page.id }}" x-data x-on:submit="if (!confirm('Block this file hash for future uploads?')) $event.preventDefault()">
+      {% include "csrf_field.html" %}
       <p><button type="submit" name="action" value="block_hash">Block this file hash</button></p>
     </form>
   {% endif %}

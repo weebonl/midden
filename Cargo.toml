@@ -1,6 +1,6 @@
 [package]
 name = "midden"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "A self-hostable Rust file and paste sharing service."

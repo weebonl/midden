@@ -4,6 +4,7 @@
   <h2>Login</h2>
   {% if settings.features.local_login %}
     <form method="post" action="/auth/login">
+      {% include "csrf_field.html" %}
       <p><label>Email<br><input type="email" name="email" autocomplete="email" required></label></p>
       <p><label>Password<br><input type="password" name="password" autocomplete="current-password" required></label></p>
       <p><button type="submit">Log in</button></p>

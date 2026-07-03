@@ -9,6 +9,9 @@ pub(super) async fn api_docs(
     jar: CookieJar,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
     let user = current_user(&state, &jar).await?;
     render(
         &state,
@@ -19,8 +22,14 @@ pub(super) async fn api_docs(
     )
 }
 
-pub(super) async fn api_openapi() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({
+pub(super) async fn api_openapi(
+    State(state): State<AppState>,
+) -> AppResult<axum::Json<serde_json::Value>> {
+    let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
+    Ok(axum::Json(serde_json::json!({
         "openapi": "3.1.0",
         "info": {
             "title": "Midden API",
@@ -80,7 +89,7 @@ pub(super) async fn api_openapi() -> axum::Json<serde_json::Value> {
                 "bearer": { "type": "http", "scheme": "bearer" }
             }
         }
-    }))
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -617,6 +626,13 @@ pub(super) async fn api_admin_reports(
     headers: HeaderMap,
     Query(query): Query<AdminReportsQuery>,
 ) -> AppResult<axum::Json<serde_json::Value>> {
+    let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
+    if !settings.features.reports {
+        return Err(AppError::NotFound);
+    }
     let _user = api_role_user(&state, &headers, "admin:reports", Role::Moderator).await?;
     let state_filter = query.state.as_deref().filter(|value| !value.is_empty());
     let kind_filter = query.kind.as_deref().filter(|value| !value.is_empty());
@@ -641,6 +657,13 @@ pub(super) async fn api_admin_update_report(
     Path(id): Path<String>,
     axum::Json(input): axum::Json<AdminReportActionForm>,
 ) -> AppResult<axum::Json<serde_json::Value>> {
+    let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
+    if !settings.features.reports {
+        return Err(AppError::NotFound);
+    }
     let user = api_role_user(&state, &headers, "admin:reports", Role::Moderator).await?;
     let report = state.db.report_by_id(&id).await?;
     apply_report_action(
@@ -669,6 +692,9 @@ pub(super) async fn api_admin_update_item(
     axum::Json(input): axum::Json<ApiAdminItemUpdate>,
 ) -> AppResult<axum::Json<serde_json::Value>> {
     let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
     let user = api_role_user(&state, &headers, "admin:items", Role::Moderator).await?;
     if let Some(item_state) = input.state.as_deref() {
         if !matches!(
@@ -719,8 +745,11 @@ pub(super) async fn api_admin_search(
     headers: HeaderMap,
     Query(query): Query<AdminSearchQuery>,
 ) -> AppResult<axum::Json<serde_json::Value>> {
-    let _user = api_role_user(&state, &headers, "admin:search", Role::Moderator).await?;
     let settings = state.settings().await?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
+    let _user = api_role_user(&state, &headers, "admin:search", Role::Moderator).await?;
     let q = query.q.unwrap_or_default();
     if q.trim().is_empty() {
         return Ok(axum::Json(serde_json::json!({ "files": [], "pastes": [] })));

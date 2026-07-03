@@ -6,6 +6,7 @@
     <p class="notice">An account is required to upload files on this instance.</p>
   {% else %}
     <form method="post" action="/url-upload">
+      {% include "csrf_field.html" %}
       <p><label>URL<br><input type="url" name="url" required placeholder="https://example.test/file.txt"></label></p>
       <p><label>Expire after, optional<br><input name="expires" list="expiry-presets" value="{{ settings.limits.default_file_expiry or "" }}" placeholder="never, 12h, 7d"></label></p>
       {% if settings.features.public_browse %}

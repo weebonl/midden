@@ -5,6 +5,7 @@ pub(super) async fn login_form(
     jar: CookieJar,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     let oidc_enabled = oidc::enabled(&state, &settings);
     render(
@@ -30,9 +31,7 @@ pub(super) async fn login(
     axum::Form(form): axum::Form<LoginForm>,
 ) -> AppResult<Response> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     enforce_rate_limit(&state, &settings, "login", &headers, None).await?;
     let user = match state.db.user_by_email(&form.email).await {
@@ -186,6 +185,7 @@ pub(super) async fn two_factor_form(
         ));
     }
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     render(
         &state,
@@ -207,6 +207,8 @@ pub(super) async fn two_factor_submit(
     jar: CookieJar,
     axum::Form(form): axum::Form<TwoFactorSubmitForm>,
 ) -> AppResult<Response> {
+    let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     let challenge = jar
         .get(TWO_FACTOR_CHALLENGE_COOKIE)
@@ -233,7 +235,7 @@ pub(super) async fn two_factor_submit(
         .db
         .audit(Some(&user.id), "auth.login", &user.id, "two-factor")
         .await?;
-    let secure_cookies = state.settings().await?.security.secure_cookies;
+    let secure_cookies = settings.security.secure_cookies;
     create_session_response(
         &state,
         jar.remove(transient_cookie(
@@ -268,9 +270,7 @@ pub(super) async fn password_reset_request_form(
     jar: CookieJar,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     render(
         &state,
@@ -294,9 +294,7 @@ pub(super) async fn password_reset_request(
     axum::Form(form): axum::Form<PasswordResetRequestForm>,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     enforce_rate_limit(&state, &settings, "password_reset", &headers, user.as_ref()).await?;
@@ -341,9 +339,7 @@ pub(super) async fn password_reset_form(
     Path(token): Path<String>,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     render(
         &state,
@@ -367,9 +363,7 @@ pub(super) async fn password_reset_submit(
     axum::Form(form): axum::Form<PasswordResetSubmitForm>,
 ) -> AppResult<Response> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     let reset_user = state
         .db
@@ -403,6 +397,7 @@ pub(super) async fn verify_email(
     Path(token): Path<String>,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let current = current_user(&state, &jar).await?;
     let verified = state
         .db
@@ -434,9 +429,7 @@ pub(super) async fn register_form(
     jar: CookieJar,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     if !matches!(
         settings.policy.signup,
@@ -472,9 +465,7 @@ pub(super) async fn register(
     axum::Form(form): axum::Form<RegisterForm>,
 ) -> AppResult<Redirect> {
     let settings = state.settings().await?;
-    if !settings.features.local_login {
-        return Err(AppError::Forbidden);
-    }
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar).await?;
     if !matches!(
         settings.policy.signup,

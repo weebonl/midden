@@ -7,10 +7,11 @@
     <a href="/admin">Settings</a>
     <a href="/admin/users">Users</a>
     <a href="/admin/search">Search files and pastes</a>
-    <a href="/admin/reports">Reports</a>
+    {% if settings.features.reports %}<a href="/admin/reports">Reports</a>{% endif %}
   </nav>
 
   <form method="post" action="/admin/jobs">
+    {% include "csrf_field.html" %}
     <p><button type="submit">Run once</button></p>
   </form>
 
@@ -20,7 +21,6 @@
       <tbody>
       <tr><th>Expired files</th><td data-label="Expired files">{{ page.summary.expired_files }}</td></tr>
       <tr><th>Expired pastes</th><td data-label="Expired pastes">{{ page.summary.expired_pastes }}</td></tr>
-      <tr><th>Expired upload sessions</th><td data-label="Expired upload sessions">{{ page.summary.expired_upload_sessions }}</td></tr>
       <tr><th>Deleted blobs</th><td data-label="Deleted blobs">{{ page.summary.deleted_blobs }}</td></tr>
       <tr><th>Deleted temp files</th><td data-label="Deleted temp files">{{ page.summary.deleted_temp_files }}</td></tr>
       <tr><th>Scanner retries</th><td data-label="Scanner retries">{{ page.summary.scanner_retries }}</td></tr>

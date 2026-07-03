@@ -123,6 +123,7 @@ impl IntoResponse for AppError {
                     "error.html",
                     &ctx.settings,
                     ctx.current_user.as_ref(),
+                    ctx.csrf_token.as_deref(),
                     serde_json::json!({ "message": message }),
                 ) {
                     Ok(rendered) => (status, Html(rendered)).into_response(),

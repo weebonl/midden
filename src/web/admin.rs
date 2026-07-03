@@ -909,6 +909,9 @@ pub(super) async fn admin_reports(
     if !policy::can_moderate(user.as_ref()) {
         return Err(AppError::Forbidden);
     }
+    if !settings.features.reports {
+        return Err(AppError::NotFound);
+    }
     let state_filter = query.state.as_deref().filter(|value| !value.is_empty());
     let kind_filter = query.kind.as_deref().filter(|value| !value.is_empty());
     let reason_filter = query
@@ -1024,6 +1027,9 @@ pub(super) async fn admin_update_report(
     if !policy::can_moderate(user.as_ref()) {
         return Err(AppError::Forbidden);
     }
+    if !settings.features.reports {
+        return Err(AppError::NotFound);
+    }
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     let report = state.db.report_by_id(&id).await?;
     apply_report_action(
@@ -1074,6 +1080,9 @@ pub(super) async fn admin_bulk_update_reports(
     let user = current_user(&state, &jar).await?;
     if !policy::can_moderate(user.as_ref()) {
         return Err(AppError::Forbidden);
+    }
+    if !settings.features.reports {
+        return Err(AppError::NotFound);
     }
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     if form.report_ids.is_empty() {

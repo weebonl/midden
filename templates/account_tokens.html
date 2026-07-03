@@ -7,6 +7,7 @@
     </p>
   {% endif %}
   <form method="post" action="/account/tokens" hx-post="/account/tokens" hx-target="#account-tokens" hx-swap="outerHTML" hx-indicator="#account-tokens-indicator" hx-disabled-elt="find button" x-data="{ scopes: ['files:write','pastes:write','files:read','pastes:read'] }">
+    {% include "csrf_field.html" %}
     <p><label>Name<br><input name="name" required placeholder="script uploads"></label></p>
     <p><label>Expires in seconds, optional<br><input type="number" min="1" name="expires_in_seconds"></label></p>
     <fieldset class="scope-grid">
@@ -31,7 +32,7 @@
           <td data-label="Status"><span class="status-badge {% if token.revoked_at %}status-badge--revoked{% else %}status-badge--active{% endif %}">{% if token.revoked_at %}revoked{% else %}active{% endif %}</span></td>
           <td data-label="Actions">
             {% if not token.revoked_at %}
-              <form method="post" action="/account/tokens/{{ token.id }}/revoke" hx-post="/account/tokens/{{ token.id }}/revoke" hx-target="#account-tokens" hx-swap="outerHTML" x-data x-on:submit="if (!confirm('Revoke this API token?')) $event.preventDefault()"><button type="submit">Revoke token</button></form>
+              <form method="post" action="/account/tokens/{{ token.id }}/revoke" hx-post="/account/tokens/{{ token.id }}/revoke" hx-target="#account-tokens" hx-swap="outerHTML" x-data x-on:submit="if (!confirm('Revoke this API token?')) $event.preventDefault()">{% include "csrf_field.html" %}<button type="submit">Revoke token</button></form>
             {% endif %}
           </td>
         </tr>

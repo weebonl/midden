@@ -20,7 +20,7 @@
           <td data-label="Created">{{ invite.created_at }}</td>
           <td data-label="Actions">
             {% if not invite.revoked_at and not invite.used_at %}
-              <form method="post" action="/admin/users/invites/{{ invite.id }}/revoke" hx-post="/admin/users/invites/{{ invite.id }}/revoke" hx-target="#admin-users-lists" hx-swap="outerHTML" x-data x-on:submit="if (!confirm('Revoke this invite?')) $event.preventDefault()"><button type="submit">Revoke</button></form>
+              <form method="post" action="/admin/users/invites/{{ invite.id }}/revoke" hx-post="/admin/users/invites/{{ invite.id }}/revoke" hx-target="#admin-users-lists" hx-swap="outerHTML" x-data x-on:submit="if (!confirm('Revoke this invite?')) $event.preventDefault()">{% include "csrf_field.html" %}<button type="submit">Revoke</button></form>
             {% endif %}
           </td>
         </tr>
@@ -42,6 +42,7 @@
           <td data-label="Email">{{ user.email }}</td>
           <td data-label="Role">
             <form method="post" action="/admin/users/{{ user.id }}/role" hx-post="/admin/users/{{ user.id }}/role" hx-target="#admin-users-lists" hx-swap="outerHTML" x-data x-on:submit="const role = $el.querySelector('select[name=role]').value; if ((role === 'admin' || role === 'owner') && !confirm('Grant this user elevated privileges?')) $event.preventDefault();">
+              {% include "csrf_field.html" %}
               <select name="role">
                 <option value="user" {% if user.role == "user" %}selected{% endif %}>user</option>
                 <option value="moderator" {% if user.role == "moderator" %}selected{% endif %}>moderator</option>
@@ -58,9 +59,9 @@
           </td>
           <td data-label="Actions">
             {% if user.is_disabled %}
-              <form method="post" action="/admin/users/{{ user.id }}/enable" hx-post="/admin/users/{{ user.id }}/enable" hx-target="#admin-users-lists" hx-swap="outerHTML"><button type="submit">Enable</button></form>
+              <form method="post" action="/admin/users/{{ user.id }}/enable" hx-post="/admin/users/{{ user.id }}/enable" hx-target="#admin-users-lists" hx-swap="outerHTML">{% include "csrf_field.html" %}<button type="submit">Enable</button></form>
             {% else %}
-              <form method="post" action="/admin/users/{{ user.id }}/disable" hx-post="/admin/users/{{ user.id }}/disable" hx-target="#admin-users-lists" hx-swap="outerHTML" x-data x-on:submit="if (!confirm('Disable this user?')) $event.preventDefault()"><button type="submit">Disable</button></form>
+              <form method="post" action="/admin/users/{{ user.id }}/disable" hx-post="/admin/users/{{ user.id }}/disable" hx-target="#admin-users-lists" hx-swap="outerHTML" x-data x-on:submit="if (!confirm('Disable this user?')) $event.preventDefault()">{% include "csrf_field.html" %}<button type="submit">Disable</button></form>
             {% endif %}
           </td>
         </tr>

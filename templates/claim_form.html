@@ -4,6 +4,7 @@
   <h2>Claim {{ page.kind }} {{ page.id }}</h2>
   <p class="field-note">Use the delete token shown when this {{ page.kind }} was first created. Claiming attaches it to your account.</p>
   <form method="post" action="/claim/{{ page.kind }}/{{ page.id }}">
+    {% include "csrf_field.html" %}
     <p><label>Delete token<br><input name="token" required autocomplete="off"></label></p>
     <p><button type="submit">Claim {{ page.kind }}</button></p>
   </form>

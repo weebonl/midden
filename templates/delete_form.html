@@ -4,6 +4,7 @@
   <h2>Delete {{ page.kind }} {{ page.id }}</h2>
   <p class="field-note">If this {{ page.kind }} belongs to your account, the token may not be required. Anonymous uploads need the delete token shown after creation.</p>
   <form method="post" action="/delete/{{ page.kind }}/{{ page.id }}" x-data x-on:submit="if (!confirm('Delete this {{ page.kind }}?')) $event.preventDefault()">
+    {% include "csrf_field.html" %}
     <p><label>Delete token, if required<br><input name="token" autocomplete="off"></label></p>
     <p><button type="submit">Delete {{ page.kind }}</button></p>
   </form>

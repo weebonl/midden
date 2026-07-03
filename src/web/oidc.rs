@@ -349,7 +349,8 @@ fn claim_values(userinfo: &UserInfo, claim: &str) -> Vec<String> {
 }
 
 pub(super) fn enabled(state: &AppState, settings: &RuntimeSettings) -> bool {
-    settings.features.oidc_login
+    settings.features.accounts
+        && settings.features.oidc_login
         && state.config.oidc.enabled
         && state.config.oidc.issuer_url.is_some()
         && state.config.oidc.client_id.is_some()

@@ -135,6 +135,7 @@
       const showing = input.type === "text";
       input.type = showing ? "password" : "text";
       secretToggle.textContent = showing ? "Show" : "Hide";
+      secretToggle.setAttribute("aria-pressed", showing ? "false" : "true");
     }
   });
 
@@ -196,7 +197,6 @@
   const uploadSelectedFile = uploadForm.querySelector("[data-selected-file]");
   const uploadButton = uploadForm.querySelector("button[type=submit]");
   const uploadCancel = uploadForm.querySelector("[data-upload-cancel]");
-  const uploadResume = uploadForm.querySelector("[data-upload-resume]");
   let uploadAbortController = null;
 
   function formatFileSize(bytes) {
@@ -212,33 +212,17 @@
     return size.toFixed(size < 10 ? 1 : 0) + " " + unit;
   }
 
-  function storedLocation(file) {
-    if (!file || !window.localStorage) return null;
-    try {
-      const key = ["midden:upload-session", file.name, file.size, file.lastModified].join(":");
-      return window.localStorage.getItem(key);
-    } catch (_) {
-      return null;
-    }
-  }
-
   function updateSelectedFile() {
     if (!uploadSelectedFile) return;
     const file = uploadInput && uploadInput.files ? uploadInput.files[0] : null;
     if (!file) {
       uploadSelectedFile.textContent = "No file selected";
       uploadSelectedFile.classList.add("is-empty");
-      if (uploadResume) uploadResume.hidden = true;
       return;
     }
     const size = formatFileSize(file.size);
     uploadSelectedFile.textContent = size ? file.name + " (" + size + ")" : file.name;
     uploadSelectedFile.classList.remove("is-empty");
-    if (uploadResume) {
-      const location = storedLocation(file);
-      uploadResume.hidden = !location;
-      uploadResume.textContent = location ? "A previous upload session is available and will resume when you upload." : "";
-    }
   }
 
   if (uploadDropZone && uploadInput) setupDropZone(uploadDropZone, uploadInput, updateSelectedFile);
@@ -313,6 +297,7 @@
 
     const formData = new FormData(uploadForm);
     uploadAbortController = new AbortController();
+    setUploadStatus("Uploading...", false);
 
     if (uploadButton) uploadButton.disabled = true;
     if (uploadCancel) uploadCancel.hidden = false;

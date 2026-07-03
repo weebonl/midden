@@ -141,6 +141,16 @@ fn csrf_cookie_from(headers: &reqwest::header::HeaderMap) -> String {
         .unwrap()
 }
 
+fn csrf_cookie_from_http(headers: &HeaderMap) -> String {
+    headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .find_map(|cookie| cookie.strip_prefix("midden_csrf=").map(ToOwned::to_owned))
+        .unwrap()
+}
+
 async fn response_body(response: Response) -> String {
     String::from_utf8(
         response
@@ -239,6 +249,31 @@ async fn admin_session_state() -> (AppState, String) {
     (state, session_token)
 }
 
+async fn user_session_state() -> (AppState, String) {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let user = state
+        .db
+        .create_user(
+            "ui-user@example.test",
+            "ui-user",
+            Some("password-hash"),
+            Role::User,
+        )
+        .await
+        .unwrap();
+    let session_token = util::secret_token();
+    state
+        .db
+        .create_session(
+            &user.id,
+            &util::hash_token(&session_token),
+            util::now_ts() + 60,
+        )
+        .await
+        .unwrap();
+    (state, session_token)
+}
+
 fn admin_settings_form_body(csrf: &str, oidc_login: bool, local_login: bool) -> String {
     let mut fields = vec![
         ("feature_files", "on"),
@@ -305,14 +340,32 @@ async fn admin_ui_exposes_wide_shell_and_settings_affordances() {
     assert!(body.contains("class=\"admin-nav\""));
     assert!(body.contains("data-admin-settings-form"));
     assert!(body.contains("class=\"settings-tabs\""));
-    assert!(body.contains("role=\"tablist\""));
-    assert!(body.contains("aria-selected"));
-    assert!(body.contains("role=\"tabpanel\""));
+    assert!(!body.contains("role=\"tablist\""));
+    assert!(!body.contains("role=\"tab\""));
+    assert!(!body.contains("role=\"tabpanel\""));
     assert!(body.contains("class=\"settings-save-bar\""));
     assert!(body.contains("data-settings-section=\"features\""));
     assert!(body.contains("data-secret-input"));
+    assert!(body.contains("aria-pressed=\"false\""));
+    assert!(body.contains("aria-controls=\""));
     assert!(body.contains("data-accent-preview"));
     assert!(body.contains("x-cloak"));
+}
+
+#[tokio::test]
+async fn rendered_post_forms_include_server_csrf_fields() {
+    let response = test_state("http://127.0.0.1".to_string())
+        .await
+        .router()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let csrf = csrf_cookie_from_http(response.headers());
+    let body = response_body(response).await;
+    assert!(body.contains("name=\"csrf_token\""));
+    assert!(body.contains(&format!("value=\"{csrf}\"")));
 }
 
 #[tokio::test]
@@ -357,6 +410,171 @@ async fn public_ui_hides_local_auth_links_when_local_login_disabled() {
     assert!(!login.contains("href=\"/auth/password-reset\""));
     assert!(!login.contains("href=\"/register\""));
     assert!(login.contains("href=\"/auth/oidc/login\""));
+}
+
+#[tokio::test]
+async fn accounts_feature_disabled_hides_and_blocks_account_flows() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let mut settings = state.settings().await.unwrap();
+    settings.features.accounts = false;
+    settings.policy.signup = crate::config::SignupMode::Open;
+    state
+        .db
+        .set_json_setting("features", &settings.features)
+        .await
+        .unwrap();
+    state
+        .db
+        .set_json_setting("policy", &settings.policy)
+        .await
+        .unwrap();
+    let router = state.router();
+
+    let home_response = router
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(home_response.status(), StatusCode::OK);
+    let home = response_body(home_response).await;
+    assert!(!home.contains("href=\"/auth/login\""));
+    assert!(!home.contains("href=\"/register\""));
+
+    for path in [
+        "/auth/login",
+        "/register",
+        "/auth/password-reset",
+        "/account",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn api_feature_disabled_hides_docs_and_account_tokens() {
+    let (state, session_token) = user_session_state().await;
+    let mut settings = state.settings().await.unwrap();
+    settings.features.api = false;
+    state
+        .db
+        .set_json_setting("features", &settings.features)
+        .await
+        .unwrap();
+    let csrf = util::secret_token();
+    let router = state.router();
+
+    for path in ["/api/docs", "/api/openapi.json"] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+
+    let account_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/account")
+                .header(header::COOKIE, format!("midden_session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(account_response.status(), StatusCode::OK);
+    let account = response_body(account_response).await;
+    assert!(!account.contains("API Tokens"));
+    assert!(!account.contains("action=\"/account/tokens\""));
+
+    let create_token = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/account/tokens")
+                .header(
+                    header::COOKIE,
+                    format!("midden_session={session_token}; midden_csrf={csrf}"),
+                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "name=blocked&scopes=files%3Aread&csrf_token={csrf}"
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_token.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn reports_feature_disabled_hides_and_blocks_moderation_queue() {
+    let (state, session_token) = admin_session_state().await;
+    let mut settings = state.settings().await.unwrap();
+    settings.features.reports = false;
+    state
+        .db
+        .set_json_setting("features", &settings.features)
+        .await
+        .unwrap();
+    let router = state.router();
+
+    let admin_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin")
+                .header(header::COOKIE, format!("midden_session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_response.status(), StatusCode::OK);
+    let admin = response_body(admin_response).await;
+    assert!(!admin.contains("href=\"/admin/reports\""));
+    assert!(admin.contains(
+        "Report links and new report submissions stay unavailable while reports are disabled."
+    ));
+
+    let reports = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin/reports")
+                .header(header::COOKIE, format!("midden_session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reports.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn password_reset_form_is_hidden_without_smtp() {
+    let response = test_state("http://127.0.0.1".to_string())
+        .await
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/password-reset")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_body(response).await;
+    assert!(body.contains("Email is not configured"));
+    assert!(!body.contains("action=\"/auth/password-reset\""));
+    assert!(!body.contains("Send reset link"));
 }
 
 #[tokio::test]
@@ -420,6 +638,12 @@ async fn static_assets_include_frontend_ux_helpers() {
     assert!(css.contains(".drop-zone:focus-within"));
     assert!(css.contains("input[type=\"checkbox\"]"));
     assert!(css.contains("inline-size: auto"));
+    assert!(css.contains("--accent-ink"));
+    assert!(css.contains("--danger"));
+    assert!(css.contains("--danger-ink"));
+    assert!(css.contains("@media (pointer: coarse)"));
+    assert!(css.contains(".status-badge--legal_hold"));
+    assert!(css.contains(".status-badge--reject"));
     assert!(css.contains("}\n\n.settings-tabs"));
 
     let js_response = router
@@ -436,9 +660,10 @@ async fn static_assets_include_frontend_ux_helpers() {
     assert!(js.contains("htmx:beforeRequest"));
     assert!(js.contains("data-copy-value"));
     assert!(js.contains("data-secret-toggle"));
+    assert!(js.contains("aria-pressed"));
     assert!(js.contains("midden:settings-section:"));
     assert!(js.contains("data-upload-cancel"));
-    assert!(js.contains("function storedLocation"));
+    assert!(js.contains("Uploading..."));
     assert!(js.contains("Copy failed"));
     assert!(js.contains("Promise.reject"));
 }
@@ -461,10 +686,11 @@ async fn public_upload_page_exposes_stateful_controls_and_hints() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_body(response).await;
     assert!(body.contains("data-upload-cancel"));
-    assert!(body.contains("data-upload-resume"));
     assert!(body.contains("id=\"upload-status\""));
+    assert!(body.contains("id=\"upload-help\""));
     assert!(body.contains("aria-describedby=\"upload-help\""));
     assert!(body.contains("No file selected"));
+    assert!(body.contains("name=\"csrf_token\""));
 }
 
 #[tokio::test]
@@ -1913,8 +2139,9 @@ async fn account_token_jobs_and_thumbnail_surfaces_are_available() {
     let account = account.text().await.unwrap();
     assert!(account.contains("name=\"bulk_action\""));
     assert!(account.contains("Delete selected items?"));
-    assert!(account.contains("role=\"tablist\""));
-    assert!(account.contains("aria-selected"));
+    assert!(account.contains("class=\"settings-tabs\""));
+    assert!(!account.contains("role=\"tablist\""));
+    assert!(!account.contains("aria-selected"));
     assert!(account.contains("name=\"expires_in_seconds\""));
 
     let jobs = client

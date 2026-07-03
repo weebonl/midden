@@ -1,5 +1,6 @@
 <section id="account-items" aria-live="polite">
   <form method="post" action="/account/items/bulk" x-data x-on:submit="if ($el.querySelectorAll('input[type=checkbox]:checked').length === 0) { $event.preventDefault(); } else if ($el.querySelector('select[name=bulk_action]').value === 'delete' && !confirm('Delete selected items?')) { $event.preventDefault(); }">
+    {% include "csrf_field.html" %}
     <div class="bulk-actions">
       <label>Bulk action<br>
         <select name="bulk_action">
@@ -19,7 +20,7 @@
       <tbody>
       {% for file in page.files %}
         <tr>
-          <td data-label="Select"><input type="checkbox" name="file_ids" value="{{ file.public_id }}"></td>
+          <td data-label="Select"><input type="checkbox" name="file_ids" value="{{ file.public_id }}" aria-label="Select file {{ file.public_id }}"></td>
           <td data-label="File"><a href="/{{ file.public_id }}{% if file.extension %}.{{ file.extension }}{% endif %}">{{ file.original_filename or file.public_id }}</a></td>
           <td data-label="Type">{{ file.content_type or "" }}</td>
           <td data-label="Size">{{ human_bytes(file.size_bytes) }}</td>
@@ -30,7 +31,7 @@
       </tbody>
     </table>
   {% else %}
-    <p>{% if page.q %}No files matched this search.{% else %}No files yet. <a href="/">Upload a file</a>.{% endif %}</p>
+    <p>{% if page.q %}No files matched this search.{% elif settings.features.files %}No files yet. <a href="/">Upload a file</a>.{% else %}File uploads are disabled on this instance.{% endif %}</p>
   {% endif %}
 
   <h3>{% if page.q %}Matching pastes{% else %}Your recent pastes{% endif %} ({{ page.pastes | length }})</h3>
@@ -40,7 +41,7 @@
       <tbody>
       {% for paste in page.pastes %}
         <tr>
-          <td data-label="Select"><input type="checkbox" name="paste_ids" value="{{ paste.public_id }}"></td>
+          <td data-label="Select"><input type="checkbox" name="paste_ids" value="{{ paste.public_id }}" aria-label="Select paste {{ paste.public_id }}"></td>
           <td data-label="Paste"><a href="/p/{{ paste.public_id }}">{{ paste.title or paste.public_id }}</a></td>
           <td data-label="Syntax">{{ paste.syntax or "" }}</td>
           <td data-label="Size">{{ paste.content | length }} B</td>
@@ -50,7 +51,7 @@
       </tbody>
     </table>
   {% else %}
-    <p>{% if page.q %}No pastes matched this search.{% else %}No pastes yet. <a href="/p/new">Create a paste</a>.{% endif %}</p>
+    <p>{% if page.q %}No pastes matched this search.{% elif settings.features.pastes %}No pastes yet. <a href="/p/new">Create a paste</a>.{% else %}Pastes are disabled on this instance.{% endif %}</p>
   {% endif %}
   </form>
 </section>

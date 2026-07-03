@@ -6,13 +6,13 @@
   <p>{{ current_user.username }} ({{ current_user.role }})</p>
 
   <div x-data="{ activeTab: 'items' }">
-    <nav class="settings-tabs" aria-label="Account Tabs" role="tablist">
-      <button id="account-tab-items" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'items' }" :aria-selected="activeTab === 'items' ? 'true' : 'false'" aria-controls="account-panel-items" x-on:click="activeTab = 'items'">My Items</button>
-      <button id="account-tab-security" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" :aria-selected="activeTab === 'security' ? 'true' : 'false'" aria-controls="account-panel-security" x-on:click="activeTab = 'security'">Security & Settings</button>
-      <button id="account-tab-tokens" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'tokens' }" :aria-selected="activeTab === 'tokens' ? 'true' : 'false'" aria-controls="account-panel-tokens" x-on:click="activeTab = 'tokens'">API Tokens</button>
+    <nav class="settings-tabs" aria-label="Account Tabs">
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'items' }" x-on:click="activeTab = 'items'">My Items</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" x-on:click="activeTab = 'security'">Security & Settings</button>
+      {% if settings.features.api %}<button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'tokens' }" x-on:click="activeTab = 'tokens'">API Tokens</button>{% endif %}
     </nav>
 
-    <div id="account-panel-items" role="tabpanel" aria-labelledby="account-tab-items" x-show="activeTab === 'items'">
+    <div id="account-panel-items" x-show="activeTab === 'items'">
       <form method="get" action="/account" hx-get="/account" hx-target="#account-items" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, input changed delay:300ms" hx-indicator="#account-search-indicator" hx-disabled-elt="find button">
         <p><label>Search your items<br><input name="q" value="{{ page.q }}" placeholder="filename, id, syntax"></label></p>
         <p><button type="submit">Search</button>{% if page.q %} <a href="/account">Clear</a>{% endif %} <span id="account-search-indicator" class="htmx-indicator">Loading...</span></p>
@@ -21,11 +21,12 @@
       {% include "account_items.html" %}
     </div>
 
-    <div id="account-panel-security" role="tabpanel" aria-labelledby="account-tab-security" x-show="activeTab === 'security'">
+    <div id="account-panel-security" x-show="activeTab === 'security'">
       <h3>Email</h3>
       <p>{{ current_user.email }} - {% if page.email_verified %}verified{% else %}not verified{% endif %}</p>
       {% if not page.email_verified and page.smtp_enabled %}
         <form method="post" action="/account/email-verification">
+          {% include "csrf_field.html" %}
           <p><button type="submit">Send verification email</button></p>
         </form>
       {% endif %}
@@ -36,6 +37,7 @@
       <h3>Password</h3>
       {% if page.has_local_password %}
         <form method="post" action="/account/password">
+          {% include "csrf_field.html" %}
           <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
           <p><label>New password<br><input type="password" name="new_password" autocomplete="new-password" required></label></p>
           <p><button type="submit">Change password</button></p>
@@ -49,11 +51,13 @@
         {% if page.two_factor_enabled %}
           <p>Email-code two-factor authentication is enabled.</p>
           <form method="post" action="/account/two-factor/disable">
+            {% include "csrf_field.html" %}
             <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
             <p><button type="submit">Disable two-factor</button></p>
           </form>
         {% elif page.smtp_enabled and page.email_verified %}
           <form method="post" action="/account/two-factor/enable">
+            {% include "csrf_field.html" %}
             <p><label>Current password<br><input type="password" name="current_password" autocomplete="current-password" required></label></p>
             <p><button type="submit">Enable two-factor</button></p>
           </form>
@@ -66,12 +70,13 @@
 
       <h3>Account status</h3>
       <form method="post" action="/account/deactivate" x-data x-on:submit="if (!confirm('Deactivate this account?')) $event.preventDefault()">
+        {% include "csrf_field.html" %}
         <p><button type="submit">Deactivate account</button></p>
       </form>
     </div>
 
-    <div id="account-panel-tokens" role="tabpanel" aria-labelledby="account-tab-tokens" x-show="activeTab === 'tokens'">
+    {% if settings.features.api %}<div id="account-panel-tokens" x-show="activeTab === 'tokens'">
       {% include "account_tokens.html" %}
-    </div>
+    </div>{% endif %}
   </div>
 {% endblock %}

@@ -76,6 +76,7 @@ pub struct RequestContext {
     pub templates: crate::templates::Templates,
     pub settings: crate::config::RuntimeSettings,
     pub current_user: Option<crate::db::User>,
+    pub csrf_token: Option<String>,
     pub is_htmx: bool,
 }
 
@@ -102,12 +103,16 @@ async fn request_context_middleware(
         }
     };
     let current_user = current_user(&state, &jar).await.unwrap_or(None);
+    let csrf_token = jar
+        .get(CSRF_COOKIE)
+        .map(|cookie| cookie.value().to_string());
     let is_htmx = htmx_request(&headers);
 
     let ctx = RequestContext {
         templates: state.templates.clone(),
         settings,
         current_user,
+        csrf_token,
         is_htmx,
     };
 
@@ -297,7 +302,7 @@ async fn csrf_cookie_middleware(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if state
@@ -307,10 +312,25 @@ async fn csrf_cookie_middleware(
     {
         return next.run(request).await;
     }
-    let needs_cookie = jar.get(CSRF_COOKIE).is_none();
+    let existing_token = jar
+        .get(CSRF_COOKIE)
+        .map(|cookie| cookie.value().to_string());
+    let needs_cookie = existing_token.is_none();
+    let token = existing_token.unwrap_or_else(util::secret_token);
+    if needs_cookie {
+        let cookie_header = request
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| format!("{value}; {CSRF_COOKIE}={token}"))
+            .unwrap_or_else(|| format!("{CSRF_COOKIE}={token}"));
+        if let Ok(value) = HeaderValue::from_str(&cookie_header) {
+            request.headers_mut().insert(header::COOKIE, value);
+        }
+    }
     let mut response = next.run(request).await;
     if needs_cookie {
-        let mut cookie = Cookie::new(CSRF_COOKIE, util::secret_token());
+        let mut cookie = Cookie::new(CSRF_COOKIE, token);
         cookie.set_path("/");
         cookie.set_same_site(SameSite::Lax);
         let secure_cookies = state

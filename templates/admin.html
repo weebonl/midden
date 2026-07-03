@@ -6,20 +6,21 @@
   <nav class="admin-nav" aria-label="Admin">
     <a href="/admin/users">Users</a>
     <a href="/admin/search">Search files and pastes</a>
-    <a href="/admin/reports">Reports</a>
+    {% if settings.features.reports %}<a href="/admin/reports">Reports</a>{% endif %}
     <a href="/admin/jobs">Jobs</a>
   </nav>
 
   <form method="post" action="/admin/settings" data-admin-settings-form x-data="{ activeTab: 'general', dirty: false, featureApi: {% if settings.features.api %}true{% else %}false{% endif %}, featureReports: {% if settings.features.reports %}true{% else %}false{% endif %}, featureUrlUpload: {% if settings.features.upload_by_url %}true{% else %}false{% endif %}, scanningEnabled: {% if settings.scanning.enabled %}true{% else %}false{% endif %}, signedInternalUrls: {% if settings.delivery.signed_internal_urls %}true{% else %}false{% endif %} }" x-on:input="dirty = true" x-on:change="dirty = true">
+    {% include "csrf_field.html" %}
     <p class="notice" x-show="dirty" x-cloak>Unsaved settings changes.</p>
-    <nav class="settings-tabs" aria-label="Settings Categories" role="tablist">
-      <button id="admin-tab-general" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'general' }" :aria-selected="activeTab === 'general' ? 'true' : 'false'" aria-controls="admin-panel-general" x-on:click="activeTab = 'general'">General</button>
-      <button id="admin-tab-limits" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'limits' }" :aria-selected="activeTab === 'limits' ? 'true' : 'false'" aria-controls="admin-panel-limits" x-on:click="activeTab = 'limits'">Limits & Quotas</button>
-      <button id="admin-tab-storage" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'storage' }" :aria-selected="activeTab === 'storage' ? 'true' : 'false'" aria-controls="admin-panel-storage" x-on:click="activeTab = 'storage'">Storage & Delivery</button>
-      <button id="admin-tab-security" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" :aria-selected="activeTab === 'security' ? 'true' : 'false'" aria-controls="admin-panel-security" x-on:click="activeTab = 'security'">Security & Moderation</button>
-      <button id="admin-tab-system" type="button" role="tab" class="tab-button" :class="{ 'is-active': activeTab === 'system' }" :aria-selected="activeTab === 'system' ? 'true' : 'false'" aria-controls="admin-panel-system" x-on:click="activeTab = 'system'">System & Scanning</button>
+    <nav class="settings-tabs" aria-label="Settings Categories">
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'general' }" x-on:click="activeTab = 'general'">General</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'limits' }" x-on:click="activeTab = 'limits'">Limits & Quotas</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'storage' }" x-on:click="activeTab = 'storage'">Storage & Delivery</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'security' }" x-on:click="activeTab = 'security'">Security & Moderation</button>
+      <button type="button" class="tab-button" :class="{ 'is-active': activeTab === 'system' }" x-on:click="activeTab = 'system'">System & Scanning</button>
     </nav>
-    <details id="admin-panel-general" role="tabpanel" aria-labelledby="admin-tab-general" class="settings-section" data-settings-section="features" x-show="activeTab === 'general'" open>
+    <details class="settings-section" data-settings-section="features" x-show="activeTab === 'general'" open>
       <summary>Features</summary>
     <p><label><input type="checkbox" name="feature_files" {% if settings.features.files %}checked{% endif %}> Files</label></p>
     <p><label><input type="checkbox" name="feature_pastes" {% if settings.features.pastes %}checked{% endif %}> Pastes</label></p>
@@ -27,7 +28,7 @@
     <p><label><input type="checkbox" name="feature_api" x-model="featureApi" {% if settings.features.api %}checked{% endif %}> API</label></p>
     <p class="field-note" x-show="!featureApi" x-cloak>API docs, API tokens, and JSON endpoints stay unavailable while API is disabled.</p>
     <p><label><input type="checkbox" name="feature_reports" x-model="featureReports" {% if settings.features.reports %}checked{% endif %}> Reports</label></p>
-    <p class="field-note" x-show="!featureReports" x-cloak>Public report links and moderation report queues stay hidden while reports are disabled.</p>
+    <p class="field-note" x-show="!featureReports" x-cloak>Report links and new report submissions stay unavailable while reports are disabled.</p>
     <p><label><input type="checkbox" name="feature_upload_by_url" x-model="featureUrlUpload" {% if settings.features.upload_by_url %}checked{% endif %}> URL upload</label></p>
     <p class="field-note" x-show="!featureUrlUpload" x-cloak>URL upload security settings are kept, but users cannot submit remote URLs while this is disabled.</p>
     <p><label><input type="checkbox" name="feature_oidc_login" {% if settings.features.oidc_login %}checked{% endif %}> OIDC login</label></p>
@@ -38,7 +39,7 @@
     <p><label><input type="checkbox" name="feature_paste_editing" {% if settings.features.paste_editing %}checked{% endif %}> Paste editing for owners</label></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-general" class="settings-section" data-settings-section="policy" x-show="activeTab === 'general'" open>
+    <details class="settings-section" data-settings-section="policy" x-show="activeTab === 'general'" open>
       <summary>Policy</summary>
     <p><label>Signup<br>
       <select name="signup">
@@ -79,7 +80,7 @@
     </label></p>
     </details>
 
-    <details id="admin-panel-limits" role="tabpanel" aria-labelledby="admin-tab-limits" class="settings-section" data-settings-section="limits" x-show="activeTab === 'limits'" open>
+    <details class="settings-section" data-settings-section="limits" x-show="activeTab === 'limits'" open>
       <summary>Limits</summary>
     <p><label>Max upload bytes<br><input type="number" min="1" name="max_upload_bytes" value="{{ settings.limits.max_upload_bytes }}" required></label></p>
     <p><label>Max paste bytes<br><input type="number" min="1" name="max_paste_bytes" value="{{ settings.limits.max_paste_bytes }}" required></label></p>
@@ -104,7 +105,7 @@
     <p><label>Item count<br><input type="number" min="1" name="user_item_count" value="{{ page.user_quota.item_count or "" }}"></label></p>
     </details>
 
-    <details id="admin-panel-security" role="tabpanel" aria-labelledby="admin-tab-security" class="settings-section" data-settings-section="security" x-show="activeTab === 'security'" open>
+    <details class="settings-section" data-settings-section="security" x-show="activeTab === 'security'" open>
       <summary>Security</summary>
     <p><label><input type="checkbox" name="secure_cookies" {% if settings.security.secure_cookies %}checked{% endif %}> Secure cookies</label></p>
     <p><label><input type="checkbox" name="reject_mime_mismatch" {% if settings.security.reject_mime_mismatch %}checked{% endif %}> Reject MIME mismatches</label></p>
@@ -140,7 +141,7 @@
     </section>
     </details>
 
-    <details id="admin-panel-storage" role="tabpanel" aria-labelledby="admin-tab-storage" class="settings-section" data-settings-section="delivery" x-show="activeTab === 'storage'" open>
+    <details class="settings-section" data-settings-section="delivery" x-show="activeTab === 'storage'" open>
     <summary>Delivery</summary>
     <p><label>Public file cache seconds<br><input type="number" min="0" name="delivery_public_cache_seconds" value="{{ settings.delivery.public_cache_seconds }}"></label></p>
     <p><label>Static asset cache seconds<br><input type="number" min="0" name="delivery_static_cache_seconds" value="{{ settings.delivery.static_cache_seconds }}"></label></p>
@@ -148,12 +149,12 @@
     <p><label><input type="checkbox" name="delivery_isolated_file_origin" {% if settings.delivery.isolated_file_origin %}checked{% endif %}> Isolated file origin</label></p>
     <p><label><input type="checkbox" name="delivery_signed_internal_urls" x-model="signedInternalUrls" {% if settings.delivery.signed_internal_urls %}checked{% endif %}> Signed internal raw file URLs</label></p>
     <section x-show="signedInternalUrls" x-cloak>
-      <p class="secret-field"><label>Internal URL secret<br><input data-secret-input type="password" name="delivery_internal_url_secret" value="{{ settings.delivery.internal_url_secret or "" }}"></label> <button type="button" data-secret-toggle>Show</button></p>
+      <p class="secret-field"><label>Internal URL secret<br><input id="delivery-internal-url-secret" data-secret-input type="password" name="delivery_internal_url_secret" value="{{ settings.delivery.internal_url_secret or "" }}"></label> <button type="button" data-secret-toggle aria-controls="delivery-internal-url-secret" aria-pressed="false">Show</button></p>
       <p><label>Internal URL TTL seconds<br><input type="number" min="1" name="delivery_internal_url_ttl_seconds" value="{{ settings.delivery.internal_url_ttl_seconds }}"></label></p>
     </section>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-storage" class="settings-section" data-settings-section="processing" x-show="activeTab === 'storage'" open>
+    <details class="settings-section" data-settings-section="processing" x-show="activeTab === 'storage'" open>
       <summary>Processing</summary>
     <p><label><input type="checkbox" name="processing_metadata_extraction" {% if settings.processing.metadata_extraction %}checked{% endif %}> Extract file metadata</label></p>
     <p><label><input type="checkbox" name="processing_metadata_stripping" {% if settings.processing.metadata_stripping %}checked{% endif %}> Strip supported image metadata on upload</label></p>
@@ -162,13 +163,13 @@
     <p><label>Thumbnail JPEG quality<br><input type="number" min="1" max="100" name="thumbnail_jpeg_quality" value="{{ settings.processing.thumbnail_jpeg_quality }}"></label></p>
     </details>
 
-    <details id="admin-panel-system" role="tabpanel" aria-labelledby="admin-tab-system" class="settings-section" data-settings-section="discovery" x-show="activeTab === 'system'" open>
+    <details class="settings-section" data-settings-section="discovery" x-show="activeTab === 'system'" open>
       <summary>Discovery</summary>
     <p><label><input type="checkbox" name="discovery_robots_index" {% if settings.discovery.robots_index %}checked{% endif %}> Allow robots to index the browse page</label></p>
     <p><label>Browse page size<br><input type="number" min="1" max="1000" name="discovery_page_size" value="{{ settings.discovery.page_size }}"></label></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-system" class="settings-section" data-settings-section="jobs" x-show="activeTab === 'system'" open>
+    <details class="settings-section" data-settings-section="jobs" x-show="activeTab === 'system'" open>
       <summary>Background jobs</summary>
     <p><label><input type="checkbox" name="jobs_enabled" {% if settings.jobs.enabled %}checked{% endif %}> Run internal background jobs</label></p>
     <p><label>Interval seconds<br><input type="number" min="30" name="jobs_interval_seconds" value="{{ settings.jobs.interval_seconds }}"></label></p>
@@ -177,12 +178,12 @@
     <p><label>Storage verify interval seconds<br><input type="number" min="60" name="jobs_storage_verify_interval_seconds" value="{{ settings.jobs.storage_verify_interval_seconds }}"></label></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-storage" class="settings-section" data-settings-section="uploads" x-show="activeTab === 'storage'" open>
+    <details class="settings-section" data-settings-section="uploads" x-show="activeTab === 'storage'" open>
       <summary>Uploads</summary>
     <p><label>Temporary directory<br><input name="upload_temp_dir" value="{{ settings.uploads.temp_dir or "" }}"></label></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-system" class="settings-section" data-settings-section="metrics" x-show="activeTab === 'system'" open>
+    <details class="settings-section" data-settings-section="metrics" x-show="activeTab === 'system'" open>
       <summary>Metrics</summary>
     <p><label><input type="checkbox" name="metrics_enabled" {% if settings.metrics.enabled %}checked{% endif %}> Enable metrics endpoint</label></p>
     <p><label>Metrics access<br>
@@ -193,22 +194,22 @@
         <option value="loopback" {% if settings.metrics.access == "loopback" %}selected{% endif %}>loopback</option>
       </select>
     </label></p>
-    <p class="secret-field"><label>Metrics bearer token<br><input data-secret-input type="password" name="metrics_bearer_token" value="{{ settings.metrics.bearer_token or "" }}"></label> <button type="button" data-secret-toggle>Show</button></p>
+    <p class="secret-field"><label>Metrics bearer token<br><input id="metrics-bearer-token" data-secret-input type="password" name="metrics_bearer_token" value="{{ settings.metrics.bearer_token or "" }}"></label> <button type="button" data-secret-toggle aria-controls="metrics-bearer-token" aria-pressed="false">Show</button></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-limits" class="settings-section" data-settings-section="tokens" x-show="activeTab === 'limits'" open>
+    <details class="settings-section" data-settings-section="tokens" x-show="activeTab === 'limits'" open>
       <summary>API tokens</summary>
     <p><label>Default token TTL seconds<br><input type="number" min="1" name="token_default_ttl_seconds" value="{{ settings.tokens.default_ttl_seconds or "" }}"></label></p>
     <p><label>Max token TTL seconds<br><input type="number" min="1" name="token_max_ttl_seconds" value="{{ settings.tokens.max_ttl_seconds or "" }}"></label></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-security" class="settings-section" data-settings-section="moderation-notifications" x-show="activeTab === 'security'" open>
+    <details class="settings-section" data-settings-section="moderation-notifications" x-show="activeTab === 'security'" open>
       <summary>Moderation notifications</summary>
     <p><label>Webhook URL<br><input type="url" name="moderation_notify_webhook_url" value="{{ settings.moderation.notify_webhook_url or "" }}"></label></p>
-    <p class="secret-field"><label>Webhook secret<br><input data-secret-input type="password" name="moderation_notify_webhook_secret" value="{{ settings.moderation.notify_webhook_secret or "" }}"></label> <button type="button" data-secret-toggle>Show</button></p>
+    <p class="secret-field"><label>Webhook secret<br><input id="moderation-notify-webhook-secret" data-secret-input type="password" name="moderation_notify_webhook_secret" value="{{ settings.moderation.notify_webhook_secret or "" }}"></label> <button type="button" data-secret-toggle aria-controls="moderation-notify-webhook-secret" aria-pressed="false">Show</button></p>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-limits" class="settings-section" data-settings-section="rate-limits" x-show="activeTab === 'limits'" open>
+    <details class="settings-section" data-settings-section="rate-limits" x-show="activeTab === 'limits'" open>
       <summary>Rate limits</summary>
     <p><label>Rate limit backend<br>
       <select name="rate_limit_backend">
@@ -237,7 +238,7 @@
     </table>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-system" class="settings-section" data-settings-section="scanning" x-show="activeTab === 'system'" open>
+    <details class="settings-section" data-settings-section="scanning" x-show="activeTab === 'system'" open>
       <summary>Scanning</summary>
     <p><label><input type="checkbox" name="scanning_enabled" x-model="scanningEnabled" {% if settings.scanning.enabled %}checked{% endif %}> Enable scanners</label></p>
     <p class="field-note" x-show="!scanningEnabled" x-cloak>Scanner configuration is saved, but uploads will not be checked while scanners are disabled.</p>
@@ -254,12 +255,12 @@
     <p><label>Command scanner program<br><input name="command_scanner_program" value="{{ page.scanner.command_program }}"></label></p>
     <p><label>Command scanner args<br><input name="command_scanner_args" value="{{ page.scanner.command_args }}"></label></p>
     <p><label>Webhook scanner URL<br><input type="url" name="webhook_scanner_url" value="{{ page.scanner.webhook_url }}"></label></p>
-    <p class="secret-field"><label>Webhook scanner secret<br><input data-secret-input type="password" name="webhook_scanner_secret" value="{{ page.scanner.webhook_secret }}"></label> <button type="button" data-secret-toggle>Show</button></p>
+    <p class="secret-field"><label>Webhook scanner secret<br><input id="webhook-scanner-secret" data-secret-input type="password" name="webhook_scanner_secret" value="{{ page.scanner.webhook_secret }}"></label> <button type="button" data-secret-toggle aria-controls="webhook-scanner-secret" aria-pressed="false">Show</button></p>
     <p><label>ClamAV socket<br><input name="clamav_socket" value="{{ page.scanner.clamav_socket }}"></label></p>
     </section>
     </details>
 
-    <details role="tabpanel" aria-labelledby="admin-tab-general" class="settings-section" data-settings-section="branding" x-show="activeTab === 'general'" open>
+    <details class="settings-section" data-settings-section="branding" x-show="activeTab === 'general'" open>
       <summary>Branding</summary>
     <p><label>Instance name<br><input name="instance_name" value="{{ settings.branding.instance_name }}" required></label></p>
     <p><label>Tagline<br><input name="tagline" value="{{ settings.branding.tagline }}"></label></p>

@@ -1,13 +1,14 @@
 <section id="reports-results" aria-live="polite" x-data="{ selected: [], allReports: [{% for report in page.reports %}'{{ report.id }}'{% if not loop.last %}, {% endif %}{% endfor %}], bulkAction: 'resolve' }">
   {% if page.reports %}
     <form id="bulk-reports" method="post" action="/admin/reports/bulk" hx-post="/admin/reports/bulk" hx-target="#reports-results" hx-swap="outerHTML">
+      {% include "csrf_field.html" %}
       <input type="hidden" name="filter_state" value="{{ page.filters.state }}">
       <input type="hidden" name="filter_kind" value="{{ page.filters.kind }}">
       <input type="hidden" name="filter_reason" value="{{ page.filters.reason }}">
       <input type="hidden" name="filter_days" value="{{ page.filters.days or "" }}">
     </form>
     <div class="bulk-actions">
-      <p><label>Bulk note<br><textarea form="bulk-reports" name="note" rows="3"></textarea></label></p>
+      <p><label>Bulk note<br><textarea form="bulk-reports" name="note" rows="3" aria-label="Bulk moderation note"></textarea></label></p>
       <p class="muted"><span x-text="selected.length">0</span> selected</p>
       <p class="action-list">
         <button type="button" x-on:click="selected = allReports.slice()">Select all</button>
@@ -29,7 +30,7 @@
       <tbody>
       {% for report in page.reports %}
         <tr>
-          <td data-label="Select"><label><input form="bulk-reports" type="checkbox" name="report_ids" value="{{ report.id }}" x-model="selected"> Report {{ loop.index }}</label></td>
+          <td data-label="Select"><label><input form="bulk-reports" type="checkbox" name="report_ids" value="{{ report.id }}" x-model="selected" aria-label="Select report {{ loop.index }}"> Report {{ loop.index }}</label></td>
           <td data-label="Item">
             {{ report.item_kind }}
             {% if report.item_kind == "file" %}
@@ -44,14 +45,15 @@
           <td data-label="Reason">{{ report.reason }}</td>
           <td data-label="State"><span class="status-badge status-badge--{{ report.state }}">{{ report.state }}</span></td>
           <td data-label="Details">{{ report.details }}</td>
-          <td data-label="Note"><textarea form="report-{{ report.id }}" name="note" rows="2"></textarea></td>
+          <td data-label="Note"><textarea form="report-{{ report.id }}" name="note" rows="2" aria-label="Note for report {{ loop.index }}"></textarea></td>
           <td data-label="Actions">
             <form id="report-{{ report.id }}" class="inline" method="post" action="/admin/reports/{{ report.id }}" hx-post="/admin/reports/{{ report.id }}" hx-target="#reports-results" hx-swap="outerHTML">
+              {% include "csrf_field.html" %}
               <input type="hidden" name="filter_state" value="{{ page.filters.state }}">
               <input type="hidden" name="filter_kind" value="{{ page.filters.kind }}">
               <input type="hidden" name="filter_reason" value="{{ page.filters.reason }}">
               <input type="hidden" name="filter_days" value="{{ page.filters.days or "" }}">
-              <select name="action">
+              <select name="action" aria-label="Action for report {{ loop.index }}">
                 <option value="resolve">Resolve</option>
                 <option value="dismiss">Dismiss</option>
                 <option value="quarantine">Quarantine</option>

@@ -14,6 +14,7 @@ pub(super) async fn account(
     Query(query): Query<AccountQuery>,
 ) -> AppResult<Html<String>> {
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -69,6 +70,10 @@ pub(super) async fn account_create_token(
     axum::Form(form): axum::Form<AccountTokenForm>,
 ) -> AppResult<Response> {
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -173,6 +178,10 @@ pub(super) async fn account_revoke_token(
     axum::Form(form): axum::Form<CsrfForm>,
 ) -> AppResult<Response> {
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
+    if !settings.features.api {
+        return Err(AppError::Forbidden);
+    }
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -216,6 +225,7 @@ pub(super) async fn account_bulk_items(
     HtmlForm(form): HtmlForm<AccountBulkItemsForm>,
 ) -> AppResult<Redirect> {
     let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -314,6 +324,8 @@ pub(super) async fn account_send_email_verification(
     jar: CookieJar,
     axum::Form(form): axum::Form<CsrfForm>,
 ) -> AppResult<Redirect> {
+    let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -346,6 +358,8 @@ pub(super) async fn account_change_password(
     jar: CookieJar,
     axum::Form(form): axum::Form<AccountPasswordForm>,
 ) -> AppResult<Redirect> {
+    let settings = state.settings().await?;
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -383,6 +397,8 @@ pub(super) async fn account_enable_two_factor(
     jar: CookieJar,
     axum::Form(form): axum::Form<AccountTwoFactorForm>,
 ) -> AppResult<Redirect> {
+    let settings = state.settings().await?;
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -416,6 +432,8 @@ pub(super) async fn account_disable_two_factor(
     jar: CookieJar,
     axum::Form(form): axum::Form<AccountTwoFactorForm>,
 ) -> AppResult<Redirect> {
+    let settings = state.settings().await?;
+    ensure_local_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -454,6 +472,8 @@ pub(super) async fn account_deactivate(
     jar: CookieJar,
     axum::Form(form): axum::Form<CsrfForm>,
 ) -> AppResult<Response> {
+    let settings = state.settings().await?;
+    ensure_accounts_enabled(&settings)?;
     let user = current_user(&state, &jar)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -463,7 +483,7 @@ pub(super) async fn account_deactivate(
         .db
         .audit(Some(&user.id), "user.deactivated", &user.id, "account UI")
         .await?;
-    let secure_cookies = state.settings().await?.security.secure_cookies;
+    let secure_cookies = settings.security.secure_cookies;
     let cookie = session_cookie(&state, String::new(), Some(0), secure_cookies);
     Ok((jar.remove(cookie), Redirect::to("/")).into_response())
 }
