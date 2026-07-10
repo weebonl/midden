@@ -8,7 +8,7 @@ Project is still in development; treat deployments as self-managed software and 
 
 The project documentation is built with mdBook:
 
-- Published docs: <https://projects.weeb.onl/midden/>
+- Published docs: <https://projects.catgirl.camp/midden/>
 - Local source: [`docs/src`](docs/src)
 
 Build or serve the book locally:
