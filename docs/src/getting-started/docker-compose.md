@@ -1,11 +1,11 @@
 # Docker Compose
 
-The repository includes three Compose files for common local and self-hosted layouts.
+The repository includes one common Compose model and two explicit storage/database overrides. Always combine the base file with exactly one override.
 
 ## SQLite And Local Storage
 
 ```console
-docker compose -f docker-compose.sqlite.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.sqlite.yml up --build
 ```
 
 This starts only the Midden service. Data is persisted in the `midden-data` volume at `/var/lib/midden`.
@@ -23,19 +23,19 @@ MIDDEN__STORAGE__LOCAL__PATH=/var/lib/midden/blobs
 ## PostgreSQL And MinIO
 
 ```console
-docker compose -f docker-compose.postgres-minio.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml up --build
 ```
 
 This starts Midden, PostgreSQL 17, MinIO, and a one-shot MinIO bucket initializer. It is useful for testing the PostgreSQL and S3-compatible paths without external services.
 
-## Multi-Profile Compose File
+## Validate The Models
 
 ```console
-docker compose up --build
-docker compose --profile postgres --profile s3 up --build
+docker compose -f docker-compose.yml -f docker-compose.sqlite.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml config --quiet
 ```
 
-`docker-compose.yml` contains the base Midden service plus optional PostgreSQL and MinIO profiles.
+The base file contains only settings shared by both deployments. The override selects the database, storage backend, dependencies, and durable volumes, so enabling an unrelated profile cannot leave Midden connected to SQLite while idle PostgreSQL or MinIO containers run beside it.
 
 ## Production Notes
 

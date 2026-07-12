@@ -4,10 +4,14 @@ Midden loads configuration from TOML and environment variables.
 
 ## Source Order
 
-1. If `--config PATH` is provided, that TOML file must exist.
-2. If no explicit path is provided, `midden.toml` is optional.
-3. Environment variables with the `MIDDEN__` prefix override file values.
-4. Runtime admin settings stored in the database override the relevant application settings after startup.
+The effective precedence, from lowest to highest, is:
+
+1. Compiled defaults.
+2. An explicit `--config PATH`, which must exist, or the optional `midden.toml` when no path is provided.
+3. Persisted admin settings for runtime-adjustable sections.
+4. Explicit `MIDDEN__` environment fields.
+
+Environment precedence is field-level. For example, `MIDDEN__SECURITY__SECURE_COOKIES=true` locks only `security.secure_cookies` to the environment value. Other fields in the persisted `security` section, such as rate limits and content policy, continue to come from the admin settings row. Removing the environment variable makes the persisted value for that field effective again.
 
 Use this command to inspect the compiled defaults:
 
@@ -39,6 +43,6 @@ midden --config midden.toml config check
 
 ## Runtime Settings
 
-The admin settings UI persists selected sections to the `settings` table as JSON. When a request runs, Midden merges those persisted settings over `AppConfig` defaults. File-only sections such as database and storage still come from startup configuration.
+The admin settings UI persists selected sections to the `settings` table as JSON. When a request runs, Midden merges those persisted settings over the startup configuration, then reapplies only the exact runtime fields controlled by `MIDDEN__` variables. File-only sections such as database and storage still come from startup configuration.
 
-This means changing a TOML default does not automatically override a value already saved in the admin UI. Use the admin UI as the current source for runtime-adjustable settings on a live instance.
+This means changing a TOML value does not automatically override a value already saved in the admin UI. Use the admin UI as the current source for runtime-adjustable settings unless an exact field is explicitly controlled by the environment.

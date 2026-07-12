@@ -1,3 +1,17 @@
+pub(super) const MIGRATION_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version BIGINT PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at BIGINT NOT NULL
+)
+"#;
+
+pub(super) const BLOB_MUTATION_LOCK_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS blob_mutation_locks (
+  hash TEXT PRIMARY KEY
+)
+"#;
+
 pub(super) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -91,6 +105,9 @@ CREATE TABLE IF NOT EXISTS blobs (
   content_type TEXT,
   ref_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blob_mutation_locks (
+  hash TEXT PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY,

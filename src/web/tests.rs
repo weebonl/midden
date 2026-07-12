@@ -514,6 +514,142 @@ async fn api_feature_disabled_hides_docs_and_account_tokens() {
 }
 
 #[tokio::test]
+async fn openapi_route_serves_complete_resolvable_contract() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let response = state
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri(super::api_paths::OPENAPI)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+        "application/json"
+    );
+    let document: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+    assert_eq!(document["openapi"], "3.1.0");
+
+    let expected_paths = [
+        super::api_paths::FILES,
+        super::api_paths::FILE,
+        super::api_paths::PASTES,
+        super::api_paths::PASTE,
+        super::api_paths::MY_FILES,
+        super::api_paths::MY_PASTES,
+        super::api_paths::CLAIM,
+        super::api_paths::REPORTS,
+        super::api_paths::TOKENS,
+        super::api_paths::TOKEN,
+        super::api_paths::ADMIN_REPORTS,
+        super::api_paths::ADMIN_REPORT,
+        super::api_paths::ADMIN_ITEM,
+        super::api_paths::ADMIN_SEARCH,
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    let actual_paths = document["paths"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_paths, expected_paths);
+
+    for path in [super::api_paths::FILE, super::api_paths::PASTE] {
+        let parameters = document["paths"][path]["delete"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(parameters.iter().any(|parameter| {
+            parameter["name"] == "x-delete-token"
+                && parameter["in"] == "header"
+                && parameter["required"] == false
+        }));
+    }
+
+    fn assert_schema_references_resolve(document: &serde_json::Value, value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(reference) = object.get("$ref").and_then(serde_json::Value::as_str) {
+                    assert!(
+                        document
+                            .pointer(reference.strip_prefix('#').unwrap())
+                            .is_some(),
+                        "unresolved schema reference {reference}"
+                    );
+                }
+                for value in object.values() {
+                    assert_schema_references_resolve(document, value);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    assert_schema_references_resolve(document, value);
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_schema_references_resolve(&document, &document);
+}
+
+#[tokio::test]
+async fn api_middleware_failures_keep_the_documented_json_error_shape() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    state
+        .db
+        .set_json_setting("features", &serde_json::json!("invalid features payload"))
+        .await
+        .unwrap();
+
+    let response = state
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri(super::api_paths::OPENAPI)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+        "application/json"
+    );
+    let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+    assert_eq!(body["error"]["status"], 500);
+    assert_eq!(body["error"]["code"], "internal_server_error");
+    assert_eq!(body["error"]["message"], "Internal Server Error");
+}
+
+#[tokio::test]
+async fn api_error_normalization_preserves_method_and_policy_headers() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let response = state
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(super::api_paths::FILES)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers()[header::ALLOW], "POST");
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    let body: serde_json::Value = serde_json::from_str(&response_body(response).await).unwrap();
+    assert_eq!(body["error"]["status"], 405);
+}
+
+#[tokio::test]
 async fn reports_feature_disabled_hides_and_blocks_moderation_queue() {
     let (state, session_token) = admin_session_state().await;
     let mut settings = state.settings().await.unwrap();
@@ -608,6 +744,52 @@ async fn admin_settings_rejects_disabling_all_sign_in_paths() {
 }
 
 #[tokio::test]
+async fn admin_settings_persists_an_empty_expiry_preset_list() {
+    let (state, session_token) = admin_session_state().await;
+    assert!(
+        !state
+            .settings()
+            .await
+            .unwrap()
+            .limits
+            .expiry
+            .allowed_presets
+            .is_empty()
+    );
+    let csrf = util::secret_token();
+
+    let response = state
+        .clone()
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/settings")
+                .header(
+                    header::COOKIE,
+                    format!("midden_session={session_token}; midden_csrf={csrf}"),
+                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(admin_settings_form_body(&csrf, true, true)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        state
+            .settings()
+            .await
+            .unwrap()
+            .limits
+            .expiry
+            .allowed_presets
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn static_assets_include_frontend_ux_helpers() {
     let issuer = spawn_oidc_provider(serde_json::json!({
         "sub": "unused-static-ui",
@@ -644,7 +826,8 @@ async fn static_assets_include_frontend_ux_helpers() {
     assert!(css.contains("@media (pointer: coarse)"));
     assert!(css.contains(".status-badge--legal_hold"));
     assert!(css.contains(".status-badge--reject"));
-    assert!(css.contains("}\n\n.settings-tabs"));
+    let normalized_css = css.replace("\r\n", "\n");
+    assert!(normalized_css.contains("}\n\n.settings-tabs"));
 
     let js_response = router
         .oneshot(
@@ -2236,10 +2419,18 @@ async fn quarantined_uploads_count_toward_usage_and_expire() {
     let state = test_state("http://127.0.0.1".to_string()).await;
     let mut settings = state.settings().await.unwrap();
     settings.scanning.enabled = true;
-    settings.scanning.adapters = vec![crate::config::ScannerAdapterConfig::Command {
-        program: "sh".to_string(),
-        args: vec!["-c".to_string(), "exit 10".to_string()],
-    }];
+    #[cfg(windows)]
+    let (program, args) = (
+        "cmd".to_string(),
+        vec!["/C".to_string(), "exit 10".to_string()],
+    );
+    #[cfg(not(windows))]
+    let (program, args) = (
+        "sh".to_string(),
+        vec!["-c".to_string(), "exit 10".to_string()],
+    );
+    settings.scanning.adapters =
+        vec![crate::config::ScannerAdapterConfig::Command { program, args }];
     state
         .db
         .set_json_setting("scanning", &settings.scanning)
@@ -2289,12 +2480,536 @@ async fn quarantined_uploads_count_toward_usage_and_expire() {
 
     state
         .db
-        .set_file_expiry(&file.public_id, &user.id, Some(util::now_ts() - 1))
+        .apply_account_bulk(&crate::domain::AccountBulkPlan {
+            owner_user_id: user.id.clone(),
+            file_ids: vec![file.public_id.clone()],
+            paste_ids: Vec::new(),
+            action: crate::domain::AccountBulkAction::SetExpiry {
+                file_expires_at: Some(util::now_ts() - 1),
+                paste_expires_at: Some(util::now_ts() - 1),
+            },
+            allow_delete_any_owner: false,
+        })
         .await
+        .unwrap()
         .unwrap();
     let summary = jobs::cleanup_expired(&state).await.unwrap();
     assert_eq!(summary.expired_files, 1);
     assert!(!state.storage.exists(&file.blob_hash).await.unwrap());
+}
+
+#[tokio::test]
+async fn background_cleanup_retries_retained_zero_ref_blobs() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let bytes = Bytes::from_static(b"retained zero ref");
+    let hash = util::sha256_hex_bytes(&bytes);
+    state
+        .db
+        .create_blob_if_missing(&hash, 17, Some("text/plain"))
+        .await
+        .unwrap();
+    state.storage.put_blob(&hash, bytes).await.unwrap();
+
+    let summary = jobs::cleanup_expired(&state).await.unwrap();
+    assert_eq!(summary.deleted_blobs, 1);
+    assert!(!state.storage.exists(&hash).await.unwrap());
+    assert!(
+        !state
+            .db
+            .zero_ref_blob_hashes()
+            .await
+            .unwrap()
+            .contains(&hash)
+    );
+}
+
+#[tokio::test]
+async fn failed_publication_compensation_removes_storage_only_orphans() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let bytes = Bytes::from_static(b"unpublished orphan");
+    let hash = util::sha256_hex_bytes(&bytes);
+    state.storage.put_blob(&hash, bytes).await.unwrap();
+    assert!(state.storage.exists(&hash).await.unwrap());
+
+    assert!(crate::commands::cleanup_zero_ref_blob(&state.db, &state.storage, &hash).await);
+    assert!(!state.storage.exists(&hash).await.unwrap());
+}
+
+#[tokio::test]
+async fn failed_upload_publication_compensates_the_new_storage_object() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    state
+        .db
+        .install_file_insert_failure_for_test()
+        .await
+        .unwrap();
+    let bytes = b"publication must fail";
+    let hash = util::sha256_hex(bytes);
+    let base = spawn_http_app(state.clone()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{base}/api/v1/files"))
+        .multipart(
+            reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes.to_vec())
+                    .file_name("failed.txt")
+                    .mime_str("text/plain")
+                    .unwrap(),
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(!state.storage.exists(&hash).await.unwrap());
+    assert!(state.db.blob_ref_count(&hash).await.is_err());
+}
+
+#[tokio::test]
+async fn moderation_delete_releases_storage_and_terminal_files_cannot_reactivate() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let file = create_test_file(
+        &state,
+        "moderation-delete-file",
+        "moderation-delete.txt",
+        "text/plain",
+        b"moderation deletion",
+    )
+    .await;
+    assert_eq!(state.db.blob_ref_count(&file.blob_hash).await.unwrap(), 1);
+
+    let mut delete_plan = crate::domain::ItemModerationPlan::new(
+        crate::domain::ItemKind::File,
+        file.public_id.clone(),
+    );
+    delete_plan.state = Some(crate::domain::ItemState::Deleted);
+    crate::commands::moderate_item(
+        &state,
+        &state.settings().await.unwrap(),
+        None,
+        delete_plan,
+        "moderation delete regression",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        state
+            .db
+            .file_by_public_id(&file.public_id)
+            .await
+            .unwrap()
+            .state,
+        "deleted"
+    );
+    assert!(!state.storage.exists(&file.blob_hash).await.unwrap());
+    assert!(state.db.blob_ref_count(&file.blob_hash).await.is_err());
+    let audit_count = state
+        .db
+        .audit_events_for_target(&file.public_id)
+        .await
+        .unwrap()
+        .len();
+
+    let mut reactivate_plan = crate::domain::ItemModerationPlan::new(
+        crate::domain::ItemKind::File,
+        file.public_id.clone(),
+    );
+    reactivate_plan.state = Some(crate::domain::ItemState::Active);
+    reactivate_plan.visibility = Some(crate::domain::ItemVisibility::Private);
+    reactivate_plan.note = Some("must roll back with terminal transition".to_string());
+    let result = crate::commands::moderate_item(
+        &state,
+        &state.settings().await.unwrap(),
+        None,
+        reactivate_plan,
+        "invalid resurrection regression",
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::BadRequest(_))));
+    assert_eq!(
+        state
+            .db
+            .file_by_public_id(&file.public_id)
+            .await
+            .unwrap()
+            .state,
+        "deleted"
+    );
+    assert_eq!(
+        state
+            .db
+            .file_by_public_id(&file.public_id)
+            .await
+            .unwrap()
+            .visibility,
+        file.visibility
+    );
+    assert_eq!(
+        state
+            .db
+            .audit_events_for_target(&file.public_id)
+            .await
+            .unwrap()
+            .len(),
+        audit_count
+    );
+    assert!(
+        state
+            .db
+            .moderation_notes_for_item("file", &file.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn report_actions_cannot_resurrect_terminal_files_or_partially_resolve_reports() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let file = create_test_file(
+        &state,
+        "terminal-report-file",
+        "terminal-report.txt",
+        "text/plain",
+        b"terminal report",
+    )
+    .await;
+    state
+        .db
+        .create_report("file", &file.public_id, None, "abuse", "terminal race")
+        .await
+        .unwrap();
+    let report = state
+        .db
+        .reports_for_item("file", &file.public_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    let mut delete_plan = crate::domain::ItemModerationPlan::new(
+        crate::domain::ItemKind::File,
+        file.public_id.clone(),
+    );
+    delete_plan.state = Some(crate::domain::ItemState::Deleted);
+    crate::commands::moderate_item(
+        &state,
+        &state.settings().await.unwrap(),
+        None,
+        delete_plan,
+        "terminal report setup",
+    )
+    .await
+    .unwrap();
+
+    let result = crate::commands::moderate_reports(
+        &state,
+        std::slice::from_ref(&report.id),
+        crate::domain::ReportAction::Quarantine,
+        None,
+        Some("must not persist"),
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::NotFound)));
+    assert_eq!(
+        state
+            .db
+            .file_by_public_id(&file.public_id)
+            .await
+            .unwrap()
+            .state,
+        "deleted"
+    );
+    assert_eq!(
+        state
+            .db
+            .reports_for_item("file", &file.public_id)
+            .await
+            .unwrap()[0]
+            .state,
+        "open"
+    );
+    assert!(
+        state
+            .db
+            .moderation_notes_for_item("file", &file.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn missing_report_in_bulk_action_rolls_back_every_side_effect() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let file = create_test_file(
+        &state,
+        "report-rollback-file",
+        "rollback.txt",
+        "text/plain",
+        b"rollback report",
+    )
+    .await;
+    state
+        .db
+        .create_report("file", &file.public_id, None, "abuse", "rollback")
+        .await
+        .unwrap();
+    let report = state
+        .db
+        .reports_for_item("file", &file.public_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    let result = crate::commands::moderate_reports(
+        &state,
+        &[report.id.clone(), "missing-report".to_string()],
+        crate::domain::ReportAction::Quarantine,
+        None,
+        Some("must not persist"),
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::NotFound)));
+
+    assert_eq!(
+        state
+            .db
+            .reports_for_item("file", &file.public_id)
+            .await
+            .unwrap()[0]
+            .state,
+        "open"
+    );
+    assert_eq!(
+        state
+            .db
+            .file_by_public_id(&file.public_id)
+            .await
+            .unwrap()
+            .state,
+        "active"
+    );
+    assert!(
+        state
+            .db
+            .moderation_notes_for_item("file", &file.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        state
+            .db
+            .audit_events_for_target(&file.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn handled_report_in_bulk_action_rejects_and_rolls_back_open_reports() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let first_file = create_test_file(
+        &state,
+        "handled-report-file",
+        "handled.txt",
+        "text/plain",
+        b"handled report",
+    )
+    .await;
+    let second_file = create_test_file(
+        &state,
+        "still-open-report-file",
+        "open.txt",
+        "text/plain",
+        b"still open report",
+    )
+    .await;
+    for file in [&first_file, &second_file] {
+        state
+            .db
+            .create_report("file", &file.public_id, None, "abuse", "bulk race")
+            .await
+            .unwrap();
+    }
+    let first_report = state
+        .db
+        .reports_for_item("file", &first_file.public_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let second_report = state
+        .db
+        .reports_for_item("file", &second_file.public_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    crate::commands::moderate_reports(
+        &state,
+        std::slice::from_ref(&first_report.id),
+        crate::domain::ReportAction::Resolve,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let result = crate::commands::moderate_reports(
+        &state,
+        &[first_report.id, second_report.id],
+        crate::domain::ReportAction::Quarantine,
+        None,
+        Some("must roll back"),
+    )
+    .await;
+    assert!(matches!(result, Err(AppError::NotFound)));
+    assert_eq!(
+        state
+            .db
+            .reports_for_item("file", &second_file.public_id)
+            .await
+            .unwrap()[0]
+            .state,
+        "open"
+    );
+    assert_eq!(
+        state
+            .db
+            .file_by_public_id(&second_file.public_id)
+            .await
+            .unwrap()
+            .state,
+        "active"
+    );
+    assert!(
+        state
+            .db
+            .moderation_notes_for_item("file", &second_file.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn invalid_admin_mutations_do_not_apply_earlier_fields_or_notes() {
+    let state = test_state("http://127.0.0.1".to_string()).await;
+    let (_admin, token) = user_with_api_token(
+        &state,
+        "rollback-admin@example.test",
+        "rollback-admin",
+        Role::Admin,
+        &["admin:reports", "admin:items"],
+    )
+    .await;
+    let file = create_test_file(
+        &state,
+        "invalid-report-action-file",
+        "invalid.txt",
+        "text/plain",
+        b"invalid report action",
+    )
+    .await;
+    state
+        .db
+        .create_report("file", &file.public_id, None, "abuse", "invalid action")
+        .await
+        .unwrap();
+    let report = state
+        .db
+        .reports_for_item("file", &file.public_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let paste = state
+        .db
+        .create_paste(crate::db::NewPaste {
+            id: &uuid::Uuid::new_v4().to_string(),
+            public_id: "combined-invalid-paste",
+            title: Some("Combined invalid mutation"),
+            content: "do not mutate",
+            syntax: Some("text"),
+            owner_user_id: None,
+            delete_token_hash: None,
+            expires_at: None,
+            visibility: "unlisted",
+        })
+        .await
+        .unwrap();
+    let base = spawn_http_app(state.clone()).await;
+    let client = reqwest::Client::new();
+
+    let invalid_report = client
+        .patch(format!("{base}/api/v1/admin/reports/{}", report.id))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "action": "not-an-action",
+            "note": "must not persist"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid_report.status(), StatusCode::BAD_REQUEST);
+
+    let invalid_item = client
+        .patch(format!(
+            "{base}/api/v1/admin/items/paste/{}",
+            paste.public_id
+        ))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "state": "quarantined",
+            "note": "must also roll back",
+            "block_hash": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid_item.status(), StatusCode::BAD_REQUEST);
+
+    assert_eq!(
+        state
+            .db
+            .reports_for_item("file", &file.public_id)
+            .await
+            .unwrap()[0]
+            .state,
+        "open"
+    );
+    assert!(
+        state
+            .db
+            .moderation_notes_for_item("file", &file.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        state
+            .db
+            .paste_by_public_id_any(&paste.public_id)
+            .await
+            .unwrap()
+            .state,
+        "active"
+    );
+    assert!(
+        state
+            .db
+            .moderation_notes_for_item("paste", &paste.public_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

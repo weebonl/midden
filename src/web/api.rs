@@ -1,8 +1,9 @@
-use super::admin::{
-    AdminReportActionForm, AdminReportsQuery, AdminSearchQuery, apply_report_action,
-    update_item_state, update_item_visibility,
-};
+use super::admin::{AdminReportsQuery, AdminSearchQuery};
 use super::*;
+use crate::{
+    commands,
+    domain::{ItemKind, ItemModerationPlan, ItemState, ItemVisibility, ReportAction},
+};
 
 pub(super) async fn api_docs(
     State(state): State<AppState>,
@@ -29,67 +30,7 @@ pub(super) async fn api_openapi(
     if !settings.features.api {
         return Err(AppError::Forbidden);
     }
-    Ok(axum::Json(serde_json::json!({
-        "openapi": "3.1.0",
-        "info": {
-            "title": "Midden API",
-            "version": env!("CARGO_PKG_VERSION")
-        },
-        "paths": {
-            "/api/v1/files": {
-                "post": {
-                    "summary": "Upload a file",
-                    "requestBody": { "content": { "multipart/form-data": {} } },
-                    "responses": { "200": { "description": "Uploaded file" } }
-                }
-            },
-            "/api/v1/files/{id}": {
-                "delete": { "summary": "Delete a file", "responses": { "200": { "description": "Deleted" } } }
-            },
-            "/api/v1/pastes": {
-                "post": { "summary": "Create a paste", "responses": { "200": { "description": "Created paste" } } }
-            },
-            "/api/v1/pastes/{id}": {
-                "delete": { "summary": "Delete a paste", "responses": { "200": { "description": "Deleted" } } }
-            },
-            "/api/v1/me/files": {
-                "get": { "summary": "List authenticated account files", "responses": { "200": { "description": "File list" } } }
-            },
-            "/api/v1/me/pastes": {
-                "get": { "summary": "List authenticated account pastes", "responses": { "200": { "description": "Paste list" } } }
-            },
-            "/api/v1/claim/{kind}/{id}": {
-                "post": { "summary": "Claim an anonymous file or paste with a delete token", "responses": { "200": { "description": "Claimed" } } }
-            },
-            "/api/v1/reports": {
-                "post": { "summary": "Report a file or paste", "responses": { "200": { "description": "Report submitted" } } }
-            },
-            "/api/v1/tokens": {
-                "get": { "summary": "List account API tokens", "responses": { "200": { "description": "Token list" } } },
-                "post": { "summary": "Create an account API token", "responses": { "200": { "description": "Token created" } } }
-            },
-            "/api/v1/tokens/{id}": {
-                "delete": { "summary": "Revoke an account API token", "responses": { "200": { "description": "Token revoked" } } }
-            },
-            "/api/v1/admin/reports": {
-                "get": { "summary": "List moderation reports", "responses": { "200": { "description": "Report list" } } }
-            },
-            "/api/v1/admin/reports/{id}": {
-                "patch": { "summary": "Update a moderation report", "responses": { "200": { "description": "Report updated" } } }
-            },
-            "/api/v1/admin/items/{kind}/{id}": {
-                "patch": { "summary": "Update item moderation state, notes, or blocked hash", "responses": { "200": { "description": "Item updated" } } }
-            },
-            "/api/v1/admin/search": {
-                "get": { "summary": "Search file and paste metadata as a moderator", "responses": { "200": { "description": "Search results" } } }
-            }
-        },
-        "components": {
-            "securitySchemes": {
-                "bearer": { "type": "http", "scheme": "bearer" }
-            }
-        }
-    })))
+    Ok(axum::Json(super::openapi::document()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,11 +38,114 @@ pub(super) struct ApiListQuery {
     q: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct ApiItemsResponse<T> {
+    items: Vec<T>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiErrorResponse {
+    error: ApiErrorDetail,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiErrorDetail {
+    status: u16,
+    code: String,
+    message: String,
+}
+
+impl ApiErrorResponse {
+    pub(super) fn new(status: StatusCode) -> Self {
+        let message = status.canonical_reason().unwrap_or("error").to_string();
+        Self {
+            error: ApiErrorDetail {
+                status: status.as_u16(),
+                code: message.to_ascii_lowercase().replace(' ', "_"),
+                message,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiFileItem {
+    id: String,
+    url: String,
+    raw_url: String,
+    internal_url: Option<String>,
+    thumbnail_url: Option<String>,
+    filename: Option<String>,
+    content_type: Option<String>,
+    size_bytes: i64,
+    image_width: Option<i64>,
+    image_height: Option<i64>,
+    visibility: String,
+    metadata: Option<serde_json::Value>,
+    expires_at: Option<i64>,
+    state: String,
+    created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiPasteItem {
+    id: String,
+    url: String,
+    raw_url: String,
+    title: Option<String>,
+    syntax: Option<String>,
+    size_bytes: usize,
+    visibility: String,
+    expires_at: Option<i64>,
+    state: String,
+    created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiDeletedResponse {
+    deleted: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiClaimedResponse {
+    claimed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiRevokedResponse {
+    revoked: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiUpdatedResponse {
+    updated: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiPasteCreatedResponse {
+    id: String,
+    url: String,
+    raw_url: String,
+    delete_token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiTokenCreatedResponse {
+    token: String,
+    expires_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ApiSearchResponse {
+    files: Vec<ApiFileItem>,
+    pastes: Vec<ApiPasteItem>,
+}
+
 pub(super) async fn api_list_my_files(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ApiListQuery>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiItemsResponse<ApiFileItem>>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -119,14 +163,14 @@ pub(super) async fn api_list_my_files(
         .iter()
         .map(|file| api_file_item(&state, &settings, file))
         .collect::<Vec<_>>();
-    Ok(axum::Json(serde_json::json!({ "items": items })))
+    Ok(axum::Json(ApiItemsResponse { items }))
 }
 
 pub(super) async fn api_list_my_pastes(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ApiListQuery>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiItemsResponse<ApiPasteItem>>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -147,7 +191,7 @@ pub(super) async fn api_list_my_pastes(
         .iter()
         .map(|paste| api_paste_item(&state, paste))
         .collect::<Vec<_>>();
-    Ok(axum::Json(serde_json::json!({ "items": items })))
+    Ok(axum::Json(ApiItemsResponse { items }))
 }
 
 pub(super) async fn api_upload_file(
@@ -197,7 +241,7 @@ pub(super) async fn api_delete_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiDeletedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -218,19 +262,14 @@ pub(super) async fn api_delete_file(
         .ok_or(AppError::NotFound)?;
     let delete_token = headers.get("x-delete-token").and_then(|v| v.to_str().ok());
     authorize_file_delete(&settings, user.as_ref(), &file, delete_token)?;
-    let deleted = state
-        .db
-        .delete_file(
-            &file.id,
-            user.as_ref().map(|user| user.id.as_str()),
-            "api delete",
-        )
-        .await?;
-    let remaining_refs = state.db.decrement_blob_ref(&deleted.blob_hash).await?;
-    if remaining_refs == 0 {
-        state.storage.delete_blob(&deleted.blob_hash).await?;
-    }
-    Ok(axum::Json(serde_json::json!({ "deleted": true })))
+    commands::delete_file(
+        &state,
+        &file,
+        user.as_ref().map(|user| user.id.as_str()),
+        "api delete",
+    )
+    .await?;
+    Ok(axum::Json(ApiDeletedResponse { deleted: true }))
 }
 
 #[derive(Debug, Serialize)]
@@ -242,49 +281,48 @@ pub(super) struct ApiUploadResponse {
     delete_token: Option<String>,
 }
 
-fn api_file_item(
-    state: &AppState,
-    settings: &RuntimeSettings,
-    file: &FileItem,
-) -> serde_json::Value {
+fn api_file_item(state: &AppState, settings: &RuntimeSettings, file: &FileItem) -> ApiFileItem {
     let raw_url = raw_file_url(state, settings, file);
     let metadata = file
         .metadata_json
         .as_deref()
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
-    serde_json::json!({
-        "id": file.public_id,
-        "url": file_url(state, settings, file),
-        "raw_url": raw_url.clone(),
-        "internal_url": signed_internal_raw_url(state, settings, file),
-        "thumbnail_url": file.thumbnail_hash.as_ref().map(|_| thumbnail_file_url(state, settings, file)),
-        "filename": file.original_filename,
-        "content_type": file.content_type,
-        "size_bytes": file.size_bytes,
-        "image_width": file.image_width,
-        "image_height": file.image_height,
-        "visibility": file.visibility,
-        "metadata": metadata,
-        "expires_at": file.expires_at,
-        "state": file.state,
-        "created_at": file.created_at,
-    })
+    ApiFileItem {
+        id: file.public_id.clone(),
+        url: file_url(state, settings, file),
+        raw_url,
+        internal_url: signed_internal_raw_url(state, settings, file),
+        thumbnail_url: file
+            .thumbnail_hash
+            .as_ref()
+            .map(|_| thumbnail_file_url(state, settings, file)),
+        filename: file.original_filename.clone(),
+        content_type: file.content_type.clone(),
+        size_bytes: file.size_bytes,
+        image_width: file.image_width,
+        image_height: file.image_height,
+        visibility: file.visibility.clone(),
+        metadata,
+        expires_at: file.expires_at,
+        state: file.state.clone(),
+        created_at: file.created_at,
+    }
 }
 
-fn api_paste_item(state: &AppState, paste: &Paste) -> serde_json::Value {
+fn api_paste_item(state: &AppState, paste: &Paste) -> ApiPasteItem {
     let base = state.config.server.public_base_url.trim_end_matches('/');
-    serde_json::json!({
-        "id": paste.public_id,
-        "url": format!("{base}/p/{}", paste.public_id),
-        "raw_url": format!("{base}/p/{}/raw", paste.public_id),
-        "title": paste.title,
-        "syntax": paste.syntax,
-        "size_bytes": paste.content.len(),
-        "visibility": paste.visibility,
-        "expires_at": paste.expires_at,
-        "state": paste.state,
-        "created_at": paste.created_at,
-    })
+    ApiPasteItem {
+        id: paste.public_id.clone(),
+        url: format!("{base}/p/{}", paste.public_id),
+        raw_url: format!("{base}/p/{}/raw", paste.public_id),
+        title: paste.title.clone(),
+        syntax: paste.syntax.clone(),
+        size_bytes: paste.content.len(),
+        visibility: paste.visibility.clone(),
+        expires_at: paste.expires_at,
+        state: paste.state.clone(),
+        created_at: paste.created_at,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,7 +338,7 @@ pub(super) async fn api_create_paste(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(input): axum::Json<ApiPasteRequest>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiPasteCreatedResponse>> {
     let settings = state.settings().await?;
     let user = api_user(&state, &headers, "pastes:write").await?;
     enforce_rate_limit(
@@ -314,47 +352,40 @@ pub(super) async fn api_create_paste(
     if !settings.features.api || !policy::can_create_paste(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
-    if input.content.len() as i64 > settings.limits.max_paste_bytes {
-        return Err(AppError::PayloadTooLarge);
-    }
-    let public_id = util::public_id();
-    let delete_token = anonymous_delete_token(&settings, user.as_ref());
-    let delete_hash = delete_token.as_deref().map(util::hash_token);
-    let syntax = normalize_syntax(input.syntax.as_deref());
-    state
-        .db
-        .create_paste(NewPaste {
-            id: &uuid::Uuid::new_v4().to_string(),
-            public_id: &public_id,
+    let expires_at = parse_expiry_or_default_checked(
+        &settings,
+        user.as_ref(),
+        "paste",
+        input.expires.as_deref(),
+        settings.limits.default_paste_expiry.as_deref(),
+    )?;
+    let visibility = requested_visibility(&settings, input.visibility.as_deref())?;
+    let created = commands::create_paste(
+        &state,
+        &settings,
+        user.as_ref(),
+        commands::CreatePasteInput {
             title: input.title.as_deref(),
+            syntax: input.syntax.as_deref(),
             content: &input.content,
-            syntax: syntax.as_deref(),
-            owner_user_id: user.as_ref().map(|u| u.id.as_str()),
-            delete_token_hash: delete_hash.as_deref(),
-            expires_at: parse_expiry_or_default_checked(
-                &settings,
-                user.as_ref(),
-                "paste",
-                input.expires.as_deref(),
-                settings.limits.default_paste_expiry.as_deref(),
-            )?,
-            visibility: requested_visibility(&settings, input.visibility.as_deref())?,
-        })
-        .await?;
-    state.metrics.pastes.inc();
-    Ok(axum::Json(serde_json::json!({
-        "id": public_id,
-        "url": format!("{}/p/{public_id}", state.config.server.public_base_url.trim_end_matches('/')),
-        "raw_url": format!("{}/p/{public_id}/raw", state.config.server.public_base_url.trim_end_matches('/')),
-        "delete_token": delete_token,
-    })))
+            expires_at,
+            visibility,
+        },
+    )
+    .await?;
+    Ok(axum::Json(ApiPasteCreatedResponse {
+        id: created.paste.public_id,
+        url: created.url,
+        raw_url: created.raw_url,
+        delete_token: created.delete_token,
+    }))
 }
 
 pub(super) async fn api_delete_paste(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiDeletedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -375,15 +406,14 @@ pub(super) async fn api_delete_paste(
         .map_err(|_| AppError::NotFound)?;
     let delete_token = headers.get("x-delete-token").and_then(|v| v.to_str().ok());
     authorize_paste_delete(&settings, user.as_ref(), &paste, delete_token)?;
-    state
-        .db
-        .delete_paste(
-            &paste.id,
-            user.as_ref().map(|user| user.id.as_str()),
-            "api delete",
-        )
-        .await?;
-    Ok(axum::Json(serde_json::json!({ "deleted": true })))
+    commands::delete_paste(
+        &state,
+        &paste,
+        user.as_ref().map(|user| user.id.as_str()),
+        "api delete",
+    )
+    .await?;
+    Ok(axum::Json(ApiDeletedResponse { deleted: true }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,7 +428,7 @@ pub(super) async fn api_create_report(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(input): axum::Json<ApiReportRequest>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<commands::ReportCreated>> {
     let settings = state.settings().await?;
     if !settings.features.api || !settings.features.reports {
         return Err(AppError::Forbidden);
@@ -417,48 +447,17 @@ pub(super) async fn api_create_report(
         user.as_ref(),
     )
     .await?;
-    state
-        .db
-        .create_report(
-            &input.kind,
-            &input.id,
-            user.as_ref().map(|user| user.id.as_str()),
-            &input.reason,
-            input.details.as_deref().unwrap_or(""),
-        )
-        .await?;
-    state.metrics.reports.inc();
-
-    if let Err(err) = trigger_moderation_webhook(
+    let result = commands::create_report(
+        &state,
         &settings,
-        &input.kind,
+        ItemKind::parse(&input.kind)?,
         &input.id,
-        user.as_ref().map(|u| u.id.as_str()),
+        user.as_ref().map(|user| user.id.as_str()),
         &input.reason,
         input.details.as_deref().unwrap_or(""),
     )
-    .await
-    {
-        tracing::error!(error = %err, "failed to trigger moderation webhook");
-    }
-
-    if let Some(abuse_email) = &settings.branding.abuse_email {
-        state
-            .mailer
-            .send(
-                abuse_email,
-                "New Midden report",
-                &format!(
-                    "A report was submitted for {} {}.\n\nReason: {}\n\nDetails:\n{}",
-                    input.kind,
-                    input.id,
-                    input.reason,
-                    input.details.as_deref().unwrap_or("")
-                ),
-            )
-            .await?;
-    }
-    Ok(axum::Json(serde_json::json!({ "reported": true })))
+    .await?;
+    Ok(axum::Json(result))
 }
 
 #[derive(Debug, Deserialize)]
@@ -471,7 +470,7 @@ pub(super) async fn api_claim_item(
     headers: HeaderMap,
     Path((kind, id)): Path<(String, String)>,
     axum::Json(input): axum::Json<ApiClaimRequest>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiClaimedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -482,28 +481,15 @@ pub(super) async fn api_claim_item(
     if !policy::allowed(settings.policy.claim_anonymous_item, Some(&user)) {
         return Err(AppError::Forbidden);
     }
-    let token_hash = util::hash_token(input.delete_token.trim());
-    let claimed = match kind.as_str() {
-        "file" => {
-            state
-                .db
-                .claim_file_by_public_id(&id, &user.id, &token_hash)
-                .await?
-        }
-        "paste" => {
-            state
-                .db
-                .claim_paste_by_public_id(&id, &user.id, &token_hash)
-                .await?
-        }
-        _ => return Err(AppError::NotFound),
-    };
-    if !claimed {
-        return Err(AppError::BadRequest(
-            "invalid token or item is not claimable".to_string(),
-        ));
-    }
-    Ok(axum::Json(serde_json::json!({ "claimed": true })))
+    commands::claim_item(
+        &state,
+        ItemKind::parse(&kind)?,
+        &id,
+        &user.id,
+        &input.delete_token,
+    )
+    .await?;
+    Ok(axum::Json(ApiClaimedResponse { claimed: true }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -516,7 +502,7 @@ pub(super) struct CreateTokenRequest {
 pub(super) async fn api_list_tokens(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiItemsResponse<crate::db::ApiTokenSummary>>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -525,14 +511,14 @@ pub(super) async fn api_list_tokens(
         .await?
         .ok_or(AppError::Unauthorized)?;
     let tokens = state.db.list_api_tokens(&user.id).await?;
-    Ok(axum::Json(serde_json::json!({ "items": tokens })))
+    Ok(axum::Json(ApiItemsResponse { items: tokens }))
 }
 
 pub(super) async fn api_create_token(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Json(input): axum::Json<CreateTokenRequest>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiTokenCreatedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -545,25 +531,19 @@ pub(super) async fn api_create_token(
     }
     let user = actor.user;
     enforce_rate_limit(&state, &settings, "api_create_token", &headers, Some(&user)).await?;
-    let expires_at = api_token_expires_at(&settings, input.expires_in_seconds)?;
-    let token = format!("mdd_{}", util::secret_token());
-    state
-        .db
-        .create_api_token_with_expiry(
-            &user.id,
-            &input.name,
-            &util::hash_token(&token),
-            &input.scopes,
-            expires_at,
-        )
-        .await?;
-    state
-        .db
-        .audit(Some(&user.id), "api_token.created", &user.id, &input.name)
-        .await?;
-    Ok(axum::Json(
-        serde_json::json!({ "token": token, "expires_at": expires_at }),
-    ))
+    let created = commands::create_token(
+        &state,
+        &settings,
+        &user,
+        &input.name,
+        &input.scopes,
+        input.expires_in_seconds,
+    )
+    .await?;
+    Ok(axum::Json(ApiTokenCreatedResponse {
+        token: created.token,
+        expires_at: created.expires_at,
+    }))
 }
 
 fn requested_scopes_allowed(caller_scopes: &[String], requested_scopes: &[String]) -> bool {
@@ -578,34 +558,11 @@ fn requested_scopes_allowed(caller_scopes: &[String], requested_scopes: &[String
     })
 }
 
-fn api_token_expires_at(
-    settings: &RuntimeSettings,
-    requested_ttl_seconds: Option<i64>,
-) -> AppResult<Option<i64>> {
-    let ttl = requested_ttl_seconds.or(settings.tokens.default_ttl_seconds);
-    let Some(ttl) = ttl else {
-        return Ok(None);
-    };
-    if ttl <= 0 {
-        return Err(AppError::BadRequest(
-            "token TTL must be positive".to_string(),
-        ));
-    }
-    if let Some(max) = settings.tokens.max_ttl_seconds
-        && ttl > max
-    {
-        return Err(AppError::BadRequest(
-            "token TTL exceeds configured maximum".to_string(),
-        ));
-    }
-    Ok(Some(util::now_ts().saturating_add(ttl)))
-}
-
 pub(super) async fn api_revoke_token(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiRevokedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -613,19 +570,15 @@ pub(super) async fn api_revoke_token(
     let user = api_user(&state, &headers, "tokens:write")
         .await?
         .ok_or(AppError::Unauthorized)?;
-    state.db.revoke_api_token(&user.id, &id).await?;
-    state
-        .db
-        .audit(Some(&user.id), "api_token.revoked", &user.id, &id)
-        .await?;
-    Ok(axum::Json(serde_json::json!({ "revoked": true })))
+    commands::revoke_token(&state, &user, &id).await?;
+    Ok(axum::Json(ApiRevokedResponse { revoked: true }))
 }
 
 pub(super) async fn api_admin_reports(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<AdminReportsQuery>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiItemsResponse<crate::db::Report>>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -648,15 +601,21 @@ pub(super) async fn api_admin_reports(
         .db
         .list_reports_filtered(state_filter, kind_filter, reason_filter, created_after)
         .await?;
-    Ok(axum::Json(serde_json::json!({ "items": reports })))
+    Ok(axum::Json(ApiItemsResponse { items: reports }))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ApiReportActionRequest {
+    action: String,
+    note: Option<String>,
 }
 
 pub(super) async fn api_admin_update_report(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    axum::Json(input): axum::Json<AdminReportActionForm>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+    axum::Json(input): axum::Json<ApiReportActionRequest>,
+) -> AppResult<axum::Json<ApiUpdatedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -665,16 +624,15 @@ pub(super) async fn api_admin_update_report(
         return Err(AppError::NotFound);
     }
     let user = api_role_user(&state, &headers, "admin:reports", Role::Moderator).await?;
-    let report = state.db.report_by_id(&id).await?;
-    apply_report_action(
+    commands::moderate_reports(
         &state,
-        &report,
-        &input.action,
-        Some(&user),
+        std::slice::from_ref(&id),
+        ReportAction::parse(&input.action)?,
+        Some(&user.id),
         input.note.as_deref(),
     )
     .await?;
-    Ok(axum::Json(serde_json::json!({ "updated": true })))
+    Ok(axum::Json(ApiUpdatedResponse { updated: true }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,61 +648,32 @@ pub(super) async fn api_admin_update_item(
     headers: HeaderMap,
     Path((kind, id)): Path<(String, String)>,
     axum::Json(input): axum::Json<ApiAdminItemUpdate>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiUpdatedResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
     }
     let user = api_role_user(&state, &headers, "admin:items", Role::Moderator).await?;
+    let item_kind = ItemKind::parse(&kind)?;
+    let mut plan = ItemModerationPlan::new(item_kind, id.clone());
     if let Some(item_state) = input.state.as_deref() {
-        if !matches!(
-            item_state,
-            "active" | "quarantined" | "takedown" | "legal_hold" | "deleted"
-        ) {
-            return Err(AppError::BadRequest("invalid item state".to_string()));
-        }
-        update_item_state(&state, &kind, &id, item_state, Some(&user.id), "admin API").await?;
+        plan.state = Some(ItemState::parse(item_state)?);
     }
     if input.visibility.is_some() {
         let visibility = requested_visibility(&settings, input.visibility.as_deref())?;
-        update_item_visibility(&state, &kind, &id, visibility, Some(&user.id), "admin API").await?;
+        plan.visibility = Some(ItemVisibility::parse(&settings, visibility)?);
     }
-    if let Some(note) = input
-        .note
-        .as_deref()
-        .map(str::trim)
-        .filter(|note| !note.is_empty())
-    {
-        state
-            .db
-            .add_moderation_note(&kind, &id, None, Some(&user.id), note)
-            .await?;
-    }
-    if input.block_hash.unwrap_or(false) {
-        if kind != "file" {
-            return Err(AppError::BadRequest(
-                "blocked hashes can only be created from files".to_string(),
-            ));
-        }
-        let file = state.db.file_by_public_id(&id).await?;
-        let mut scanning = settings.scanning.clone();
-        if !scanning
-            .blocked_hashes
-            .iter()
-            .any(|hash| hash.eq_ignore_ascii_case(&file.blob_hash))
-        {
-            scanning.blocked_hashes.push(file.blob_hash.clone());
-            state.db.set_json_setting("scanning", &scanning).await?;
-        }
-    }
-    Ok(axum::Json(serde_json::json!({ "updated": true })))
+    plan.note = input.note;
+    plan.block_hash = input.block_hash.unwrap_or(false);
+    commands::moderate_item(&state, &settings, Some(&user.id), plan, "admin API").await?;
+    Ok(axum::Json(ApiUpdatedResponse { updated: true }))
 }
 
 pub(super) async fn api_admin_search(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<AdminSearchQuery>,
-) -> AppResult<axum::Json<serde_json::Value>> {
+) -> AppResult<axum::Json<ApiSearchResponse>> {
     let settings = state.settings().await?;
     if !settings.features.api {
         return Err(AppError::Forbidden);
@@ -752,7 +681,10 @@ pub(super) async fn api_admin_search(
     let _user = api_role_user(&state, &headers, "admin:search", Role::Moderator).await?;
     let q = query.q.unwrap_or_default();
     if q.trim().is_empty() {
-        return Ok(axum::Json(serde_json::json!({ "files": [], "pastes": [] })));
+        return Ok(axum::Json(ApiSearchResponse {
+            files: Vec::new(),
+            pastes: Vec::new(),
+        }));
     }
     let files = state
         .db
@@ -768,7 +700,5 @@ pub(super) async fn api_admin_search(
         .iter()
         .map(|paste| api_paste_item(&state, paste))
         .collect::<Vec<_>>();
-    Ok(axum::Json(
-        serde_json::json!({ "files": files, "pastes": pastes }),
-    ))
+    Ok(axum::Json(ApiSearchResponse { files, pastes }))
 }

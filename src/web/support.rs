@@ -165,6 +165,9 @@ pub(super) fn htmx_request(headers: &HeaderMap) -> bool {
 }
 
 pub(super) async fn current_user(state: &AppState, jar: &CookieJar) -> AppResult<Option<User>> {
+    if let Ok(user) = REQUEST_CONTEXT.try_with(|ctx| ctx.current_user.clone()) {
+        return Ok(user);
+    }
     let Some(cookie) = jar.get(&state.config.security.session_cookie_name) else {
         return Ok(None);
     };
@@ -455,63 +458,4 @@ pub(super) fn authorize_item_view(
     } else {
         Err(AppError::Forbidden)
     }
-}
-
-pub(super) fn normalize_syntax(input: Option<&str>) -> Option<String> {
-    let syntax = input?.trim().to_ascii_lowercase();
-    if syntax.is_empty() {
-        return None;
-    }
-    Some(
-        match syntax.as_str() {
-            "txt" | "plain" => "text",
-            "js" | "mjs" | "cjs" => "javascript",
-            "ts" => "typescript",
-            "py" => "python",
-            "rb" => "ruby",
-            "rs" => "rust",
-            "sh" | "shell" => "bash",
-            "yml" => "yaml",
-            "md" => "markdown",
-            "htm" => "html",
-            other => other,
-        }
-        .to_string(),
-    )
-}
-
-pub(super) async fn trigger_moderation_webhook(
-    settings: &RuntimeSettings,
-    kind: &str,
-    id: &str,
-    reporter_user_id: Option<&str>,
-    reason: &str,
-    details: &str,
-) -> anyhow::Result<()> {
-    let Some(url) = settings
-        .moderation
-        .notify_webhook_url
-        .as_deref()
-        .filter(|url| !url.is_empty())
-    else {
-        return Ok(());
-    };
-    let client = reqwest::Client::new();
-    let mut request = client.post(url).json(&serde_json::json!({
-        "kind": kind,
-        "id": id,
-        "reporter_user_id": reporter_user_id,
-        "reason": reason,
-        "details": details,
-    }));
-    if let Some(secret) = settings
-        .moderation
-        .notify_webhook_secret
-        .as_deref()
-        .filter(|secret| !secret.is_empty())
-    {
-        request = request.header("x-midden-moderation-secret", secret);
-    }
-    request.send().await?.error_for_status()?;
-    Ok(())
 }

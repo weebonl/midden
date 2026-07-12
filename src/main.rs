@@ -1,6 +1,8 @@
 mod app;
+mod commands;
 mod config;
 mod db;
+mod domain;
 mod jobs;
 mod mail;
 mod metrics;
@@ -207,6 +209,11 @@ async fn storage_command(config: AppConfig, command: StorageCommand) -> anyhow::
     match command {
         StorageCommand::Gc { dry_run } => {
             let storage = storage::BlobStorage::from_config(&config).await?;
+            if !dry_run {
+                eprintln!(
+                    "warning: storage gc must run while all Midden server and job processes are stopped"
+                );
+            }
             let expired_files = db.expired_files().await?;
             let expired_file_count = expired_files.len();
             let expired_pastes = if dry_run {
@@ -214,18 +221,14 @@ async fn storage_command(config: AppConfig, command: StorageCommand) -> anyhow::
             } else {
                 db.expire_due_pastes().await?
             };
-            let mut deleted_blobs = 0_u64;
-            for file in expired_files {
-                if dry_run {
-                    continue;
+            let deleted_blobs = if dry_run {
+                0
+            } else {
+                for file in expired_files {
+                    db.expire_file_and_release_blob(&file.id).await?;
                 }
-                db.expire_file(&file.id).await?;
-                let remaining_refs = db.decrement_blob_ref(&file.blob_hash).await?;
-                if remaining_refs == 0 {
-                    storage.delete_blob(&file.blob_hash).await?;
-                    deleted_blobs += 1;
-                }
-            }
+                commands::cleanup_zero_ref_blobs(&db, &storage).await?
+            };
             let expired_auth_state = if dry_run {
                 0
             } else {
@@ -292,7 +295,7 @@ async fn storage_command(config: AppConfig, command: StorageCommand) -> anyhow::
             Ok(())
         }
         StorageCommand::Import { input } => {
-            import_storage(&config, &input).await?;
+            import_storage(&config, &db, &input).await?;
             Ok(())
         }
     }
@@ -363,7 +366,7 @@ async fn export_storage(config: &AppConfig, db: &Database, output: &Path) -> any
     Ok(())
 }
 
-async fn import_storage(config: &AppConfig, input: &Path) -> anyhow::Result<()> {
+async fn import_storage(config: &AppConfig, db: &Database, input: &Path) -> anyhow::Result<()> {
     let storage = storage::BlobStorage::from_config(config).await?;
     let manifest_path = input.join("manifest.json");
     let hashes = if tokio::fs::try_exists(&manifest_path).await? {
@@ -393,7 +396,13 @@ async fn import_storage(config: &AppConfig, input: &Path) -> anyhow::Result<()> 
             anyhow::bail!("invalid blob hash in export: {hash}");
         }
         let bytes = tokio::fs::read(blob_dir.join(&hash)).await?;
+        let actual_hash = util::sha256_hex(&bytes);
+        if !actual_hash.eq_ignore_ascii_case(&hash) {
+            anyhow::bail!("blob contents do not match export hash {hash}: computed {actual_hash}");
+        }
+        let mutation = db.begin_blob_mutation(&hash).await?;
         storage.put_blob(&hash, Bytes::from(bytes)).await?;
+        mutation.commit().await?;
         imported += 1;
     }
     println!("imported {imported} blobs from {}", input.display());
@@ -401,7 +410,7 @@ async fn import_storage(config: &AppConfig, input: &Path) -> anyhow::Result<()> 
 }
 
 fn is_blob_hash(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|ch| ch.is_ascii_hexdigit())
+    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn init_tracing() {

@@ -78,17 +78,16 @@ async fn run_pass(
 }
 
 pub async fn cleanup_expired(state: &AppState) -> anyhow::Result<JobSummary> {
+    // Keep zero-ref selection and object deletion atomic with respect to in-process uploads.
+    let _upload_guard = state.upload_quota_lock.lock().await;
     let mut summary = JobSummary::default();
     let expired_files = state.db.expired_files().await?;
-    summary.expired_files = expired_files.len() as u64;
     for file in expired_files {
-        state.db.expire_file(&file.id).await?;
-        let remaining_refs = state.db.decrement_blob_ref(&file.blob_hash).await?;
-        if remaining_refs == 0 {
-            state.storage.delete_blob(&file.blob_hash).await?;
-            summary.deleted_blobs += 1;
-        }
+        state.db.expire_file_and_release_blob(&file.id).await?;
+        summary.expired_files += 1;
     }
+    summary.deleted_blobs =
+        crate::commands::cleanup_zero_ref_blobs(&state.db, &state.storage).await?;
 
     summary.expired_pastes = state.db.expire_due_pastes().await?;
 
@@ -178,6 +177,7 @@ async fn process_file_metadata(
         let mut metadata_json = file.metadata_json.clone();
         let mut thumbnail_hash = file.thumbnail_hash.clone();
         let mut bytes_cache = None;
+        let mut update_committed_with_thumbnail = false;
 
         if settings.processing.metadata_extraction && metadata_json.is_none() {
             let bytes = state.storage.get_blob(&file.blob_hash).await?;
@@ -205,25 +205,37 @@ async fn process_file_metadata(
                 settings.processing.thumbnail_max_dimension,
             ) {
                 let hash = util::sha256_hex_bytes(&thumbnail);
-                state
-                    .db
-                    .create_blob_if_missing(&hash, thumbnail.len() as i64, Some("image/png"))
+                let mut blob_mutation = state.db.begin_blob_mutation(&hash).await?;
+                blob_mutation
+                    .create_blob_if_missing(thumbnail.len() as i64, Some("image/png"))
                     .await?;
                 if !state.storage.exists(&hash).await? {
                     state.storage.put_blob(&hash, thumbnail).await?;
                 }
-                thumbnail_hash = Some(hash);
+                let attached = blob_mutation
+                    .attach_thumbnail(&file.public_id, metadata_json.as_deref())
+                    .await?;
+                blob_mutation.commit().await?;
+                if attached {
+                    thumbnail_hash = Some(hash);
+                    update_committed_with_thumbnail = true;
+                    updated += 1;
+                } else {
+                    let current = state.db.file_by_public_id(&file.public_id).await?;
+                    thumbnail_hash = current.thumbnail_hash;
+                    if current.metadata_json.is_some() {
+                        metadata_json = current.metadata_json;
+                    }
+                }
             }
         }
 
-        if metadata_json != file.metadata_json || thumbnail_hash != file.thumbnail_hash {
+        if !update_committed_with_thumbnail
+            && (metadata_json != file.metadata_json || thumbnail_hash != file.thumbnail_hash)
+        {
             state
                 .db
-                .update_file_metadata(
-                    &file.public_id,
-                    metadata_json.as_deref(),
-                    thumbnail_hash.as_deref(),
-                )
+                .update_file_metadata(&file.public_id, metadata_json.as_deref())
                 .await?;
             updated += 1;
         }

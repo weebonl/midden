@@ -84,6 +84,9 @@ legal_hold
 deleted
 ```
 
+`deleted` is terminal for files. Once a file is deleted or expired, its blob reference may be
+released and the object removed, so it cannot be changed back to a live moderation state.
+
 `block_hash` only works for files.
 
 ## Admin Search

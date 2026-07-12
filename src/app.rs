@@ -54,6 +54,9 @@ impl AppState {
     }
 
     pub async fn settings(&self) -> anyhow::Result<RuntimeSettings> {
+        if let Ok(settings) = crate::web::REQUEST_CONTEXT.try_with(|ctx| ctx.settings.clone()) {
+            return Ok(settings);
+        }
         self.db.runtime_settings(&self.config).await
     }
 

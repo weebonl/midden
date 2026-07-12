@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands;
 
 pub(super) async fn new_paste(
     State(state): State<AppState>,
@@ -46,49 +47,37 @@ pub(super) async fn create_paste(
     if !policy::can_create_paste(&settings, user.as_ref()) {
         return Err(AppError::Forbidden);
     }
-    if form.content.len() as i64 > settings.limits.max_paste_bytes {
-        return Err(AppError::PayloadTooLarge);
-    }
-
-    let public_id = util::public_id();
-    let delete_token = anonymous_delete_token(&settings, user.as_ref());
-    let delete_hash = delete_token.as_deref().map(util::hash_token);
-    let syntax = normalize_syntax(form.syntax.as_deref());
-    let paste = state
-        .db
-        .create_paste(NewPaste {
-            id: &uuid::Uuid::new_v4().to_string(),
-            public_id: &public_id,
-            title: form
-                .title
-                .as_deref()
-                .filter(|value| !value.trim().is_empty()),
+    let expires_at = parse_expiry_or_default_checked(
+        &settings,
+        user.as_ref(),
+        "paste",
+        form.expires.as_deref(),
+        settings.limits.default_paste_expiry.as_deref(),
+    )?;
+    let visibility = requested_visibility(&settings, form.visibility.as_deref())?;
+    let created = commands::create_paste(
+        &state,
+        &settings,
+        user.as_ref(),
+        commands::CreatePasteInput {
+            title: form.title.as_deref(),
+            syntax: form.syntax.as_deref(),
             content: &form.content,
-            syntax: syntax.as_deref(),
-            owner_user_id: user.as_ref().map(|u| u.id.as_str()),
-            delete_token_hash: delete_hash.as_deref(),
-            expires_at: parse_expiry_or_default_checked(
-                &settings,
-                user.as_ref(),
-                "paste",
-                form.expires.as_deref(),
-                settings.limits.default_paste_expiry.as_deref(),
-            )?,
-            visibility: requested_visibility(&settings, form.visibility.as_deref())?,
-        })
-        .await?;
-    state.metrics.pastes.inc();
-    let base = state.config.server.public_base_url.trim_end_matches('/');
+            expires_at,
+            visibility,
+        },
+    )
+    .await?;
     render(
         &state,
         "paste_result.html",
         &settings,
         user.as_ref(),
         serde_json::json!({
-            "paste": paste,
-            "url": format!("{base}/p/{public_id}"),
-            "raw_url": format!("{base}/p/{public_id}/raw"),
-            "delete_token": delete_token,
+            "paste": created.paste,
+            "url": created.url,
+            "raw_url": created.raw_url,
+            "delete_token": created.delete_token,
         }),
     )
 }
@@ -195,7 +184,7 @@ pub(super) async fn update_paste(
     if !can_edit_paste(&settings, Some(&user), &paste) {
         return Err(AppError::Forbidden);
     }
-    let syntax = normalize_syntax(form.syntax.as_deref());
+    let syntax = commands::normalize_syntax(form.syntax.as_deref());
     state
         .db
         .update_paste(

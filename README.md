@@ -29,6 +29,12 @@ cargo run -- serve
 
 Open <http://127.0.0.1:8080>.
 
+For the persistent SQLite container model:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.sqlite.yml up --build
+```
+
 See the [quick start](docs/src/getting-started/quick-start.md), [configuration guide](docs/src/operator/configuration.md), and [API guide](docs/src/api/overview.md) for details.
 
 ## License

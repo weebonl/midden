@@ -252,11 +252,8 @@
     </label></p>
     <p><label>Blocked hashes, one per line<br><textarea name="blocked_hashes" rows="5">{{ page.blocked_hashes }}</textarea></label></p>
     <p><label>Blocked MIME types, one per line<br><textarea name="blocked_mime_types" rows="5">{{ page.blocked_mime_types }}</textarea></label></p>
-    <p><label>Command scanner program<br><input name="command_scanner_program" value="{{ page.scanner.command_program }}"></label></p>
-    <p><label>Command scanner args<br><input name="command_scanner_args" value="{{ page.scanner.command_args }}"></label></p>
-    <p><label>Webhook scanner URL<br><input type="url" name="webhook_scanner_url" value="{{ page.scanner.webhook_url }}"></label></p>
-    <p class="secret-field"><label>Webhook scanner secret<br><input id="webhook-scanner-secret" data-secret-input type="password" name="webhook_scanner_secret" value="{{ page.scanner.webhook_secret }}"></label> <button type="button" data-secret-toggle aria-controls="webhook-scanner-secret" aria-pressed="false">Show</button></p>
-    <p><label>ClamAV socket<br><input name="clamav_socket" value="{{ page.scanner.clamav_socket }}"></label></p>
+    <p><label>Scanner adapters JSON<br><textarea name="scanner_adapters_json" rows="12" spellcheck="false">{{ page.scanner_adapters_json }}</textarea></label></p>
+    <p class="field-note">Use an array of typed adapters. Command arguments remain distinct JSON strings, so spaces and quoting round-trip exactly.</p>
     </section>
     </details>
 
@@ -278,7 +275,8 @@
     <p><label><input type="checkbox" name="opengraph_files" {% if settings.branding.opengraph_files %}checked{% endif %}> File page OpenGraph metadata</label></p>
     <p><label><input type="checkbox" name="opengraph_pastes" {% if settings.branding.opengraph_pastes %}checked{% endif %}> Paste page OpenGraph metadata</label></p>
     <p><label>Public takedown text<br><textarea name="takedown_page_text" rows="4">{{ settings.branding.takedown_page_text }}</textarea></label></p>
-    <p><label>Homepage blocks, one per line as title | body | href | link label<br><textarea name="homepage_blocks" rows="5">{{ page.homepage_blocks }}</textarea></label></p>
+    <p><label>Homepage blocks JSON<br><textarea name="homepage_blocks_json" rows="12" spellcheck="false">{{ page.homepage_blocks_json }}</textarea></label></p>
+    <p class="field-note">Use an array of objects with <code>title</code>, <code>body</code>, <code>href</code>, and <code>link_label</code>. Pipes and newlines round-trip exactly as JSON strings.</p>
     <p><label>Abuse email<br><input type="email" name="abuse_email" value="{{ settings.branding.abuse_email or "" }}"></label></p>
     <p><label>Contact URL<br><input name="contact_url" value="{{ settings.branding.contact_url or "" }}"></label></p>
     </details>

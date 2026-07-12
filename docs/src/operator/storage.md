@@ -52,4 +52,6 @@ midden --config midden.toml storage gc
 
 Garbage collection expires due files and pastes, decrements blob references, and deletes unreferenced blob objects.
 
+Run non-dry-run garbage collection only while every Midden server and job process that uses the same database and storage backend is stopped. The CLI cannot share the in-process upload lock, so running it alongside uploads could delete a content-addressed object as that hash is being reused. The dry run and `storage verify` remain safe while the service is online.
+
 Background jobs perform similar cleanup automatically when enabled.

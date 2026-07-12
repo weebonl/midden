@@ -1,0 +1,16 @@
+pub(super) const DOCS: &str = "/api/docs";
+pub(super) const OPENAPI: &str = "/api/openapi.json";
+pub(super) const FILES: &str = "/api/v1/files";
+pub(super) const FILE: &str = "/api/v1/files/{id}";
+pub(super) const PASTES: &str = "/api/v1/pastes";
+pub(super) const PASTE: &str = "/api/v1/pastes/{id}";
+pub(super) const MY_FILES: &str = "/api/v1/me/files";
+pub(super) const MY_PASTES: &str = "/api/v1/me/pastes";
+pub(super) const CLAIM: &str = "/api/v1/claim/{kind}/{id}";
+pub(super) const REPORTS: &str = "/api/v1/reports";
+pub(super) const TOKENS: &str = "/api/v1/tokens";
+pub(super) const TOKEN: &str = "/api/v1/tokens/{id}";
+pub(super) const ADMIN_REPORTS: &str = "/api/v1/admin/reports";
+pub(super) const ADMIN_REPORT: &str = "/api/v1/admin/reports/{id}";
+pub(super) const ADMIN_ITEM: &str = "/api/v1/admin/items/{kind}/{id}";
+pub(super) const ADMIN_SEARCH: &str = "/api/v1/admin/search";

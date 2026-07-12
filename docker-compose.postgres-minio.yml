@@ -1,16 +1,11 @@
 services:
   midden:
-    build: .
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-    ports:
-      - "8080:8080"
     environment:
-      MIDDEN__SERVER__BIND: "0.0.0.0:8080"
-      MIDDEN__SERVER__PUBLIC_BASE_URL: "${MIDDEN_PUBLIC_BASE_URL:-http://localhost:8080}"
       MIDDEN__DATABASE__URL: "postgres://midden:midden@postgres:5432/midden"
       MIDDEN__STORAGE__BACKEND: "s3"
       MIDDEN__STORAGE__S3__BUCKET: "midden"
@@ -19,7 +14,6 @@ services:
       MIDDEN__STORAGE__S3__ACCESS_KEY_ID: "midden"
       MIDDEN__STORAGE__S3__SECRET_ACCESS_KEY: "midden-secret"
       MIDDEN__STORAGE__S3__ALLOW_HTTP: "true"
-    restart: unless-stopped
 
   postgres:
     image: postgres:17
@@ -27,12 +21,17 @@ services:
       POSTGRES_USER: midden
       POSTGRES_PASSWORD: midden
       POSTGRES_DB: midden
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U midden -d midden"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     volumes:
       - midden-postgres:/var/lib/postgresql/data
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: midden
@@ -45,14 +44,20 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:latest@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       minio:
         condition: service_started
     entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 midden midden-secret; do sleep 1; done;
+      /bin/sh -eu -c "
+      attempts=0;
+      until mc alias set local http://minio:9000 midden midden-secret; do
+        attempts=$$((attempts + 1));
+        if [ $$attempts -ge 60 ]; then exit 1; fi;
+        sleep 2;
+      done;
       mc mb --ignore-existing local/midden;
+      mc stat local/midden;
       "
 
 volumes:

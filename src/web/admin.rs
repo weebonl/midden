@@ -1,4 +1,8 @@
 use super::*;
+use crate::{
+    commands,
+    domain::{ItemKind, ItemModerationPlan, ItemState, ItemVisibility, ReportAction},
+};
 
 pub(super) async fn admin(
     State(state): State<AppState>,
@@ -9,7 +13,8 @@ pub(super) async fn admin(
     if !policy::can_admin(user.as_ref()) {
         return Err(AppError::Forbidden);
     }
-    let scanner_defaults = scanner_form_defaults(&settings);
+    let homepage_blocks_json = homepage_blocks_for_form(&settings.branding.homepage_blocks)?;
+    let scanner_adapters_json = scanner_adapters_for_form(&settings.scanning.adapters)?;
     let user_quota = settings
         .limits
         .role_quotas
@@ -24,8 +29,8 @@ pub(super) async fn admin(
         serde_json::json!({
             "blocked_hashes": settings.scanning.blocked_hashes.join("\n"),
             "blocked_mime_types": settings.scanning.blocked_mime_types.join("\n"),
-            "homepage_blocks": homepage_blocks_for_form(&settings.branding.homepage_blocks),
-            "scanner": scanner_defaults,
+            "homepage_blocks_json": homepage_blocks_json,
+            "scanner_adapters_json": scanner_adapters_json,
             "user_quota": user_quota,
         }),
     )
@@ -500,7 +505,7 @@ pub(super) struct AdminSettingsForm {
     opengraph_files: Option<String>,
     opengraph_pastes: Option<String>,
     takedown_page_text: String,
-    homepage_blocks: Option<String>,
+    homepage_blocks_json: Option<String>,
     abuse_email: Option<String>,
     contact_url: Option<String>,
     secure_cookies: Option<String>,
@@ -573,11 +578,7 @@ pub(super) struct AdminSettingsForm {
     blocked_hashes: Option<String>,
     blocked_mime_types: Option<String>,
     default_on_error: String,
-    command_scanner_program: Option<String>,
-    command_scanner_args: Option<String>,
-    webhook_scanner_url: Option<String>,
-    webhook_scanner_secret: Option<String>,
-    clamav_socket: Option<String>,
+    scanner_adapters_json: Option<String>,
     csrf_token: Option<String>,
 }
 
@@ -592,6 +593,7 @@ pub(super) async fn admin_update_settings(
     }
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     let settings = state.settings().await?;
+    let persisted_settings = state.db.persisted_runtime_settings(&state.config).await?;
     let features = FeatureConfig {
         files: form.feature_files.is_some(),
         pastes: form.feature_pastes.is_some(),
@@ -606,13 +608,6 @@ pub(super) async fn admin_update_settings(
         paste_content_search: form.feature_paste_content_search.is_some(),
         paste_editing: form.feature_paste_editing.is_some(),
     };
-    let mut candidate_settings = settings.clone();
-    candidate_settings.features = features.clone();
-    if !candidate_settings.features.local_login && !oidc::enabled(&state, &candidate_settings) {
-        return Err(AppError::BadRequest(
-            "at least one sign-in method must remain enabled".to_string(),
-        ));
-    }
     let mut limits = settings.limits.clone();
     limits.max_upload_bytes =
         parse_required_i64("max_upload_bytes", form.max_upload_bytes.as_deref())?;
@@ -831,10 +826,8 @@ pub(super) async fn admin_update_settings(
     limits.expiry.user_max_file_expiry = nonempty(form.user_max_file_expiry.as_deref());
     limits.expiry.anonymous_max_paste_expiry = nonempty(form.anonymous_max_paste_expiry.as_deref());
     limits.expiry.user_max_paste_expiry = nonempty(form.user_max_paste_expiry.as_deref());
-    let presets = lines(form.expiry_allowed_presets.as_deref());
-    if !presets.is_empty() {
-        limits.expiry.allowed_presets = presets;
-    }
+    limits.expiry.allowed_presets =
+        expiry_presets_from_form(form.expiry_allowed_presets.as_deref());
 
     let mut branding = settings.branding.clone();
     branding.instance_name = form.instance_name.trim().to_string();
@@ -854,7 +847,7 @@ pub(super) async fn admin_update_settings(
     branding.opengraph_files = form.opengraph_files.is_some();
     branding.opengraph_pastes = form.opengraph_pastes.is_some();
     branding.takedown_page_text = form.takedown_page_text.trim().to_string();
-    branding.homepage_blocks = parse_homepage_blocks(form.homepage_blocks.as_deref())?;
+    branding.homepage_blocks = parse_homepage_blocks_json(form.homepage_blocks_json.as_deref())?;
     branding.abuse_email = nonempty(form.abuse_email.as_deref());
     branding.contact_url = nonempty(form.contact_url.as_deref());
 
@@ -863,27 +856,46 @@ pub(super) async fn admin_update_settings(
     scanning.blocked_hashes = lines(form.blocked_hashes.as_deref());
     scanning.blocked_mime_types = lines(form.blocked_mime_types.as_deref());
     scanning.default_on_error = parse_scan_decision(&form.default_on_error)?;
-    scanning.adapters = scanner_adapters_from_form(&form);
-    state.db.set_json_setting("features", &features).await?;
-    state.db.set_json_setting("limits", &limits).await?;
-    state.db.set_json_setting("policy", &policy).await?;
-    state.db.set_json_setting("security", &security).await?;
-    state.db.set_json_setting("delivery", &delivery).await?;
-    state.db.set_json_setting("branding", &branding).await?;
-    state.db.set_json_setting("scanning", &scanning).await?;
-    state.db.set_json_setting("processing", &processing).await?;
-    state.db.set_json_setting("discovery", &discovery).await?;
-    state.db.set_json_setting("jobs", &jobs).await?;
-    state.db.set_json_setting("uploads", &uploads).await?;
-    state.db.set_json_setting("metrics", &metrics).await?;
-    state.db.set_json_setting("tokens", &tokens).await?;
-    state.db.set_json_setting("moderation", &moderation).await?;
+    scanning.adapters = parse_scanner_adapters_json(form.scanner_adapters_json.as_deref())?;
+    let mut candidate_settings = RuntimeSettings {
+        features,
+        limits,
+        branding,
+        policy,
+        security,
+        delivery,
+        scanning,
+        processing,
+        discovery,
+        jobs,
+        uploads,
+        metrics,
+        tokens,
+        moderation,
+    };
+    state.db.restore_environment_owned_fields(
+        &mut candidate_settings,
+        &persisted_settings,
+        &state.config,
+    )?;
+    let mut effective_candidate = candidate_settings.clone();
     state
         .db
-        .audit(
+        .apply_runtime_environment(&mut effective_candidate, &state.config)?;
+    if !effective_candidate.features.local_login && !oidc::enabled(&state, &effective_candidate) {
+        return Err(AppError::BadRequest(
+            "at least one sign-in method must remain enabled".to_string(),
+        ));
+    }
+    state
+        .config
+        .validate_runtime_settings(&effective_candidate)
+        .map_err(|err| AppError::BadRequest(format!("invalid runtime settings: {err}")))?;
+    state
+        .db
+        .replace_runtime_settings(
+            &candidate_settings,
             user.as_ref().map(|u| u.id.as_str()),
-            "settings.updated",
-            "settings",
             "admin UI",
         )
         .await?;
@@ -1031,12 +1043,11 @@ pub(super) async fn admin_update_report(
         return Err(AppError::NotFound);
     }
     validate_csrf(&jar, form.csrf_token.as_deref())?;
-    let report = state.db.report_by_id(&id).await?;
-    apply_report_action(
+    commands::moderate_reports(
         &state,
-        &report,
-        &form.action,
-        user.as_ref(),
+        std::slice::from_ref(&id),
+        ReportAction::parse(&form.action)?,
+        user.as_ref().map(|user| user.id.as_str()),
         form.note.as_deref(),
     )
     .await?;
@@ -1085,22 +1096,14 @@ pub(super) async fn admin_bulk_update_reports(
         return Err(AppError::NotFound);
     }
     validate_csrf(&jar, form.csrf_token.as_deref())?;
-    if form.report_ids.is_empty() {
-        return Err(AppError::BadRequest(
-            "select at least one report".to_string(),
-        ));
-    }
-    for report_id in &form.report_ids {
-        let report = state.db.report_by_id(report_id).await?;
-        apply_report_action(
-            &state,
-            &report,
-            &form.action,
-            user.as_ref(),
-            form.note.as_deref(),
-        )
-        .await?;
-    }
+    commands::moderate_reports(
+        &state,
+        &form.report_ids,
+        ReportAction::parse(&form.action)?,
+        user.as_ref().map(|user| user.id.as_str()),
+        form.note.as_deref(),
+    )
+    .await?;
     if htmx_request(&headers) {
         Ok(render_reports_table(
             &state,
@@ -1115,95 +1118,6 @@ pub(super) async fn admin_bulk_update_reports(
         .into_response())
     } else {
         Ok(Redirect::to("/admin/reports").into_response())
-    }
-}
-
-pub(super) async fn apply_report_action(
-    state: &AppState,
-    report: &crate::db::Report,
-    action: &str,
-    user: Option<&User>,
-    note: Option<&str>,
-) -> AppResult<()> {
-    let actor_id = user.map(|user| user.id.as_str());
-    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
-        state
-            .db
-            .add_moderation_note(
-                &report.item_kind,
-                &report.item_public_id,
-                Some(&report.id),
-                actor_id,
-                note,
-            )
-            .await?;
-    }
-    match action {
-        "resolve" => {
-            state
-                .db
-                .update_report_state(&report.id, "resolved", actor_id, "moderator resolved")
-                .await?;
-        }
-        "dismiss" => {
-            state
-                .db
-                .update_report_state(&report.id, "dismissed", actor_id, "moderator dismissed")
-                .await?;
-        }
-        "quarantine" | "takedown" | "legal_hold" => {
-            moderate_reported_item(state, report, action, actor_id).await?;
-            state
-                .db
-                .update_report_state(
-                    &report.id,
-                    "resolved",
-                    actor_id,
-                    &format!("moderator set item state {action}"),
-                )
-                .await?;
-        }
-        _ => return Err(AppError::BadRequest("unknown report action".to_string())),
-    }
-    Ok(())
-}
-
-async fn moderate_reported_item(
-    state: &AppState,
-    report: &crate::db::Report,
-    item_state: &str,
-    actor_user_id: Option<&str>,
-) -> AppResult<()> {
-    let detail = format!("report {}", report.id);
-    let updated = match report.item_kind.as_str() {
-        "file" => {
-            state
-                .db
-                .update_file_state_by_public_id(
-                    &report.item_public_id,
-                    item_state,
-                    actor_user_id,
-                    &detail,
-                )
-                .await?
-        }
-        "paste" => {
-            state
-                .db
-                .update_paste_state_by_public_id(
-                    &report.item_public_id,
-                    item_state,
-                    actor_user_id,
-                    &detail,
-                )
-                .await?
-        }
-        _ => return Err(AppError::BadRequest("unknown report item kind".to_string())),
-    };
-    if updated {
-        Ok(())
-    } else {
-        Err(AppError::NotFound)
     }
 }
 
@@ -1260,25 +1174,19 @@ pub(super) async fn admin_update_item(
         return Err(AppError::Forbidden);
     }
     validate_csrf(&jar, form.csrf_token.as_deref())?;
-    let actor_id = user.as_ref().map(|user| user.id.as_str());
+    let item_kind = ItemKind::parse(&kind)?;
+    let mut plan = ItemModerationPlan::new(item_kind, id.clone());
     match form.action.as_str() {
         "set_state" => {
             let state_value = form
                 .state
                 .as_deref()
-                .filter(|state| {
-                    matches!(
-                        *state,
-                        "active" | "quarantined" | "takedown" | "legal_hold" | "deleted"
-                    )
-                })
                 .ok_or_else(|| AppError::BadRequest("invalid item state".to_string()))?;
-            update_item_state(&state, &kind, &id, state_value, actor_id, "item moderation").await?;
+            plan.state = Some(ItemState::parse(state_value)?);
         }
         "set_visibility" => {
             let visibility = requested_visibility(&settings, form.visibility.as_deref())?;
-            update_item_visibility(&state, &kind, &id, visibility, actor_id, "item moderation")
-                .await?;
+            plan.visibility = Some(ItemVisibility::parse(&settings, visibility)?);
         }
         "add_note" => {
             let note = form
@@ -1287,98 +1195,22 @@ pub(super) async fn admin_update_item(
                 .map(str::trim)
                 .filter(|note| !note.is_empty())
                 .ok_or_else(|| AppError::BadRequest("note is required".to_string()))?;
-            state
-                .db
-                .add_moderation_note(&kind, &id, None, actor_id, note)
-                .await?;
+            plan.note = Some(note.to_string());
         }
         "block_hash" => {
-            if kind != "file" {
-                return Err(AppError::BadRequest(
-                    "blocked hashes can only be created from files".to_string(),
-                ));
-            }
-            let file = state.db.file_by_public_id(&id).await?;
-            let mut scanning = settings.scanning.clone();
-            if !scanning
-                .blocked_hashes
-                .iter()
-                .any(|hash| hash.eq_ignore_ascii_case(&file.blob_hash))
-            {
-                scanning.blocked_hashes.push(file.blob_hash.clone());
-                state.db.set_json_setting("scanning", &scanning).await?;
-                state
-                    .db
-                    .audit(actor_id, "scanner.blocked_hash_added", &id, &file.blob_hash)
-                    .await?;
-            }
+            plan.block_hash = true;
         }
         _ => return Err(AppError::BadRequest("unknown item action".to_string())),
     }
+    commands::moderate_item(
+        &state,
+        &settings,
+        user.as_ref().map(|user| user.id.as_str()),
+        plan,
+        "item moderation",
+    )
+    .await?;
     Ok(Redirect::to(&format!("/admin/items/{kind}/{id}")))
-}
-
-pub(super) async fn update_item_state(
-    state: &AppState,
-    kind: &str,
-    id: &str,
-    item_state: &str,
-    actor_id: Option<&str>,
-    detail: &str,
-) -> AppResult<()> {
-    let updated = match kind {
-        "file" => {
-            state
-                .db
-                .update_file_state_by_public_id(id, item_state, actor_id, detail)
-                .await?
-        }
-        "paste" => {
-            state
-                .db
-                .update_paste_state_by_public_id(id, item_state, actor_id, detail)
-                .await?
-        }
-        _ => return Err(AppError::NotFound),
-    };
-    if updated {
-        Ok(())
-    } else {
-        Err(AppError::NotFound)
-    }
-}
-
-pub(super) async fn update_item_visibility(
-    state: &AppState,
-    kind: &str,
-    id: &str,
-    visibility: &str,
-    actor_id: Option<&str>,
-    detail: &str,
-) -> AppResult<()> {
-    match kind {
-        "file" => {
-            if !state.db.set_file_visibility(id, visibility).await? {
-                return Err(AppError::NotFound);
-            }
-            state
-                .db
-                .audit(actor_id, "file.visibility_updated", id, detail)
-                .await?;
-            Ok(())
-        }
-        "paste" => {
-            if !state.db.set_paste_visibility(id, visibility).await? {
-                return Err(AppError::NotFound);
-            }
-            state
-                .db
-                .audit(actor_id, "paste.visibility_updated", id, detail)
-                .await?;
-            Ok(())
-        }
-        _ => Err(AppError::NotFound),
-    }
 }
 
 async fn moderation_item_json(
@@ -1430,34 +1262,16 @@ async fn moderation_item_json(
     }
 }
 
-fn scanner_form_defaults(settings: &RuntimeSettings) -> serde_json::Value {
-    let mut command_program = String::new();
-    let mut command_args = String::new();
-    let mut webhook_url = String::new();
-    let mut webhook_secret = String::new();
-    let mut clamav_socket = String::new();
-    for adapter in &settings.scanning.adapters {
-        match adapter {
-            ScannerAdapterConfig::Command { program, args } => {
-                command_program = program.clone();
-                command_args = args.join(" ");
-            }
-            ScannerAdapterConfig::Webhook { url, secret } => {
-                webhook_url = url.clone();
-                webhook_secret = secret.clone().unwrap_or_default();
-            }
-            ScannerAdapterConfig::ClamAv { socket } => {
-                clamav_socket = socket.clone();
-            }
-        }
-    }
-    serde_json::json!({
-        "command_program": command_program,
-        "command_args": command_args,
-        "webhook_url": webhook_url,
-        "webhook_secret": webhook_secret,
-        "clamav_socket": clamav_socket,
-    })
+fn scanner_adapters_for_form(adapters: &[ScannerAdapterConfig]) -> AppResult<String> {
+    serde_json::to_string_pretty(adapters).map_err(|err| AppError::Other(err.into()))
+}
+
+fn parse_scanner_adapters_json(value: Option<&str>) -> AppResult<Vec<ScannerAdapterConfig>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(value)
+        .map_err(|err| AppError::BadRequest(format!("invalid scanner adapters JSON: {err}")))
 }
 
 fn parse_required_i64(name: &str, value: Option<&str>) -> AppResult<i64> {
@@ -1634,65 +1448,119 @@ fn apply_rate_limit_form(
     Ok(())
 }
 
-fn scanner_adapters_from_form(form: &AdminSettingsForm) -> Vec<ScannerAdapterConfig> {
-    let mut adapters = Vec::new();
-    if let Some(program) = nonempty(form.command_scanner_program.as_deref()) {
-        adapters.push(ScannerAdapterConfig::Command {
-            program,
-            args: form
-                .command_scanner_args
-                .as_deref()
-                .unwrap_or_default()
-                .split_whitespace()
-                .map(ToOwned::to_owned)
-                .collect(),
-        });
-    }
-    if let Some(url) = nonempty(form.webhook_scanner_url.as_deref()) {
-        adapters.push(ScannerAdapterConfig::Webhook {
-            url,
-            secret: nonempty(form.webhook_scanner_secret.as_deref()),
-        });
-    }
-    if let Some(socket) = nonempty(form.clamav_socket.as_deref()) {
-        adapters.push(ScannerAdapterConfig::ClamAv { socket });
-    }
-    adapters
+fn homepage_blocks_for_form(blocks: &[HomepageBlock]) -> AppResult<String> {
+    serde_json::to_string_pretty(blocks).map_err(|err| AppError::Other(err.into()))
 }
 
-fn homepage_blocks_for_form(blocks: &[HomepageBlock]) -> String {
-    blocks
+fn parse_homepage_blocks_json(input: Option<&str>) -> AppResult<Vec<HomepageBlock>> {
+    let Some(input) = input.map(str::trim).filter(|input| !input.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let blocks: Vec<HomepageBlock> = serde_json::from_str(input)
+        .map_err(|err| AppError::BadRequest(format!("invalid homepage blocks JSON: {err}")))?;
+    if blocks
         .iter()
-        .map(|block| {
-            [
-                block.title.as_str(),
-                block.body.as_str(),
-                block.href.as_deref().unwrap_or_default(),
-                block.link_label.as_deref().unwrap_or_default(),
-            ]
-            .join(" | ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn parse_homepage_blocks(input: Option<&str>) -> AppResult<Vec<HomepageBlock>> {
-    let mut blocks = Vec::new();
-    for line in lines(input) {
-        let mut parts = line.split('|').map(str::trim);
-        let title = parts.next().unwrap_or_default();
-        let body = parts.next().unwrap_or_default();
-        if title.is_empty() || body.is_empty() {
-            return Err(AppError::BadRequest(
-                "homepage blocks require title and body".to_string(),
-            ));
-        }
-        blocks.push(HomepageBlock {
-            title: title.to_string(),
-            body: body.to_string(),
-            href: nonempty(parts.next()),
-            link_label: nonempty(parts.next()),
-        });
+        .any(|block| block.title.trim().is_empty() || block.body.trim().is_empty())
+    {
+        return Err(AppError::BadRequest(
+            "homepage blocks require title and body".to_string(),
+        ));
     }
     Ok(blocks)
+}
+
+fn expiry_presets_from_form(input: Option<&str>) -> Vec<String> {
+    lines(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scanner_adapter_editor_round_trips_arbitrary_vectors_and_argv() {
+        let adapters = vec![
+            ScannerAdapterConfig::Command {
+                program: "scanner one".to_string(),
+                args: vec![
+                    "--label".to_string(),
+                    "value with spaces".to_string(),
+                    "quoted=\"value\"".to_string(),
+                ],
+            },
+            ScannerAdapterConfig::Command {
+                program: "scanner-two".to_string(),
+                args: vec!["--stdin".to_string()],
+            },
+            ScannerAdapterConfig::Webhook {
+                url: "https://scanner-one.example.test/check".to_string(),
+                secret: Some("first secret".to_string()),
+            },
+            ScannerAdapterConfig::Webhook {
+                url: "https://scanner-two.example.test/check".to_string(),
+                secret: None,
+            },
+            ScannerAdapterConfig::ClamAv {
+                socket: "tcp://127.0.0.1:3310".to_string(),
+            },
+        ];
+
+        let encoded = scanner_adapters_for_form(&adapters).unwrap();
+        let decoded = parse_scanner_adapters_json(Some(&encoded)).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::to_value(adapters).unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_scanner_adapter_editor_round_trips_as_empty_vector() {
+        let encoded = scanner_adapters_for_form(&[]).unwrap();
+        let decoded = parse_scanner_adapters_json(Some(&encoded)).unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn homepage_block_editor_round_trips_pipes_and_newlines() {
+        let blocks = vec![
+            HomepageBlock {
+                title: "Title | with a pipe".to_string(),
+                body: "First line\nSecond | line".to_string(),
+                href: Some("https://example.test/a|b?next=line%0Abreak".to_string()),
+                link_label: Some("Read | more\nnow".to_string()),
+            },
+            HomepageBlock {
+                title: "Another\nblock".to_string(),
+                body: "Body".to_string(),
+                href: None,
+                link_label: None,
+            },
+        ];
+
+        let encoded = homepage_blocks_for_form(&blocks).unwrap();
+        let decoded = parse_homepage_blocks_json(Some(&encoded)).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::to_value(blocks).unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_homepage_block_editor_round_trips_as_empty_vector() {
+        let encoded = homepage_blocks_for_form(&[]).unwrap();
+        let decoded = parse_homepage_blocks_json(Some(&encoded)).unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn empty_expiry_preset_editor_clears_existing_presets() {
+        let mut expiry = crate::config::ExpiryGuardrailsConfig::default();
+        assert!(!expiry.allowed_presets.is_empty());
+
+        expiry.allowed_presets = expiry_presets_from_form(Some(" \r\n \n"));
+
+        assert!(expiry.allowed_presets.is_empty());
+    }
 }

@@ -909,11 +909,12 @@ pub(super) async fn persist_file_upload(
     let delete_token_hash = delete_token.as_deref().map(util::hash_token);
     let quota_guard = state.upload_quota_lock.lock().await;
     quota::enforce_file_upload_quota(&state.db, settings, user, size_bytes).await?;
-    state
-        .db
-        .create_blob_if_missing(&hash, size_bytes, Some(&content_type))
+    let mut blob_mutation = state.db.begin_blob_mutation(&hash).await?;
+    blob_mutation
+        .create_blob_if_missing(size_bytes, Some(&content_type))
         .await?;
-    if !state.storage.exists(&hash).await? {
+    let object_already_existed = state.storage.exists(&hash).await?;
+    if !object_already_existed {
         if let Some(path) = uploaded.source_path() {
             state.storage.put_blob_from_path(&hash, path).await?;
         } else {
@@ -923,8 +924,7 @@ pub(super) async fn persist_file_upload(
                 .await?;
         }
     }
-    let file = state
-        .db
+    let file = match blob_mutation
         .create_file_item(NewFileItem {
             id: &uuid::Uuid::new_v4().to_string(),
             public_id: &public_id,
@@ -943,7 +943,23 @@ pub(super) async fn persist_file_upload(
             thumbnail_hash: None,
             state: file_state,
         })
-        .await?;
+        .await
+    {
+        Ok(file) => file,
+        Err(err) => {
+            drop(blob_mutation);
+            if !object_already_existed {
+                crate::commands::cleanup_zero_ref_blob(&state.db, &state.storage, &hash).await;
+            }
+            return Err(err.into());
+        }
+    };
+    if let Err(err) = blob_mutation.commit().await {
+        if !object_already_existed {
+            crate::commands::cleanup_zero_ref_blob(&state.db, &state.storage, &hash).await;
+        }
+        return Err(err.into());
+    }
     drop(quota_guard);
     for report in &scan.reports {
         state

@@ -15,6 +15,7 @@ on:
       - templates/**
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
       - midden.example.toml
   pull_request:
     branches:
@@ -28,11 +29,12 @@ on:
       - templates/**
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
       - midden.example.toml
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: weebonl/midden
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-amd64:
@@ -75,10 +77,35 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          load: true
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            midden:smoke-amd64
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=midden-amd64
+
+      - name: Smoke-test the image default command
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --detach --name midden-smoke --publish 18080:8080 midden:smoke-amd64
+          for _ in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' midden-smoke)"
+            if [ "$status" = healthy ]; then
+              curl --fail --silent --show-error http://127.0.0.1:18080/healthz
+              exit 0
+            fi
+            if [ "$status" = unhealthy ]; then
+              break
+            fi
+            sleep 2
+          done
+          docker logs midden-smoke
+          exit 1
+
+      - name: Remove smoke-test container
+        if: always() && github.event_name == 'pull_request'
+        run: docker rm --force midden-smoke || true
 
       - name: Build and push image by digest
         if: github.event_name != 'pull_request'
@@ -226,9 +253,16 @@ jobs:
         env:
           METADATA_JSON: ${{ steps.meta.outputs.json }}
         run: |
-          docker buildx imagetools create \
-            $(jq -r '.tags | map("-t " + .) | join(" ")' <<< "$METADATA_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=("-t" "$tag")
+          done
+          sources=()
+          for digest in *; do
+            sources+=("${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:$digest")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
       - name: Inspect image
         env:

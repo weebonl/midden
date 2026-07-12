@@ -41,6 +41,8 @@ jobs complete: expired_files=0, expired_pastes=0, expired_auth_rows=0, deleted_b
 
 The admin jobs page exposes the same one-shot run for admins.
 
+The in-process background, admin, and one-shot job paths serialize blob cleanup with uploads. By contrast, `storage gc` is a separate maintenance process and must be run with all Midden server and job processes stopped; see [Storage](./storage.md#garbage-collection).
+
 ## Storage Drift
 
 When storage verification finds missing or orphaned blobs, Midden logs a warning and includes counts in the job summary. Use `storage verify` for a direct operator check.

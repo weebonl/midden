@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.95.0
 
 jobs:
   fmt:
@@ -22,8 +23,8 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt
+          rustup default "$RUST_VERSION"
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -41,14 +42,14 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy
+          rustup default "$RUST_VERSION"
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   build:
     name: Build
@@ -60,17 +61,65 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --workspace --all-features
+        run: cargo build --locked --workspace --all-features
 
   test:
     name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked --workspace --all-features
+
+  operability:
+    name: Validate config and Compose
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Load and check the example configuration
+        env:
+          MIDDEN__DATABASE__URL: "sqlite::memory:"
+          MIDDEN__DATABASE__MAX_CONNECTIONS: "1"
+          MIDDEN__STORAGE__LOCAL__PATH: /tmp/midden-ci-blobs
+        run: cargo run --locked --quiet -- --config midden.example.toml config check
+
+      - name: Validate the SQLite Compose model
+        run: docker compose -f docker-compose.yml -f docker-compose.sqlite.yml config --quiet
+
+      - name: Validate the PostgreSQL and MinIO Compose model
+        run: docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml config --quiet
+
+  backend-tests:
+    name: PostgreSQL and S3 tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -88,6 +137,11 @@ jobs:
           --health-retries 12
     env:
       MIDDEN_TEST_POSTGRES_URL: postgres://midden:midden@localhost:5432/midden
+      MIDDEN_TEST_S3_BUCKET: midden
+      MIDDEN_TEST_S3_REGION: us-east-1
+      MIDDEN_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      MIDDEN_TEST_S3_ACCESS_KEY_ID: midden
+      MIDDEN_TEST_S3_SECRET_ACCESS_KEY: midden-secret
 
     steps:
       - name: Checkout repository
@@ -95,11 +149,29 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --workspace --all-features
+      - name: Start MinIO and provision the test bucket
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml up --detach minio
+          docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml run --rm minio-init
+
+      - name: Run the ignored PostgreSQL integration test
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features db::tests::postgres_migration_smoke_when_configured -- --ignored --exact --nocapture 2>&1 | tee /tmp/postgres-test.log
+          grep -F "test result: ok. 1 passed; 0 failed" /tmp/postgres-test.log
+
+      - name: Run the ignored S3 integration test
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features storage::tests::s3_storage_round_trip_when_configured -- --ignored --exact --nocapture 2>&1 | tee /tmp/s3-test.log
+          grep -F "test result: ok. 1 passed; 0 failed" /tmp/s3-test.log
+
+      - name: Stop MinIO
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml down --volumes

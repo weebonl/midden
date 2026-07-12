@@ -1,17 +1,11 @@
 services:
   midden:
-    build: .
-    ports:
-      - "8080:8080"
     environment:
-      MIDDEN__SERVER__BIND: "0.0.0.0:8080"
-      MIDDEN__SERVER__PUBLIC_BASE_URL: "${MIDDEN_PUBLIC_BASE_URL:-http://localhost:8080}"
       MIDDEN__DATABASE__URL: "sqlite:///var/lib/midden/midden.db?mode=rwc"
       MIDDEN__STORAGE__BACKEND: "local"
       MIDDEN__STORAGE__LOCAL__PATH: "/var/lib/midden/blobs"
     volumes:
       - midden-data:/var/lib/midden
-    restart: unless-stopped
 
 volumes:
   midden-data:

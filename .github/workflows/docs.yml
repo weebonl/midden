@@ -32,6 +32,7 @@ concurrency:
 env:
   MDBOOK_VERSION: 0.5.3
   CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.95.0
 
 jobs:
   build:
@@ -44,8 +45,8 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -59,6 +60,9 @@ jobs:
 
       - name: Build documentation
         run: mdbook build docs
+
+      - name: Test documentation
+        run: mdbook test docs
 
       - name: Upload GitHub Pages artifact
         if: github.event_name != 'pull_request'

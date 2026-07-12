@@ -63,11 +63,9 @@ impl BlobStorage {
     }
 
     pub async fn put_blob(&self, hash: &str, bytes: Bytes) -> anyhow::Result<()> {
+        let path = self.object_path(hash)?;
         self.store
-            .put(
-                &self.object_path(hash),
-                object_store::PutPayload::from_bytes(bytes),
-            )
+            .put(&path, object_store::PutPayload::from_bytes(bytes))
             .await?;
         Ok(())
     }
@@ -80,7 +78,7 @@ impl BlobStorage {
         let mut source = tokio::fs::File::open(source_path).await?;
         let mut writer = BufWriter::with_capacity(
             Arc::clone(&self.store),
-            self.object_path(hash),
+            self.object_path(hash)?,
             Self::STREAM_UPLOAD_BUFFER_BYTES,
         );
         tokio::io::copy(&mut source, &mut writer).await?;
@@ -91,7 +89,7 @@ impl BlobStorage {
     pub async fn get_blob(&self, hash: &str) -> anyhow::Result<Bytes> {
         Ok(self
             .store
-            .get(&self.object_path(hash))
+            .get(&self.object_path(hash)?)
             .await?
             .bytes()
             .await?)
@@ -101,7 +99,7 @@ impl BlobStorage {
         &self,
         hash: &str,
     ) -> anyhow::Result<BoxStream<'static, object_store::Result<Bytes>>> {
-        let path = self.object_path(hash);
+        let path = self.object_path(hash)?;
         let get_result = self.store.get(&path).await?;
         Ok(get_result.into_stream())
     }
@@ -111,7 +109,7 @@ impl BlobStorage {
         hash: &str,
         range: GetRange,
     ) -> anyhow::Result<BoxStream<'static, object_store::Result<Bytes>>> {
-        let path = self.object_path(hash);
+        let path = self.object_path(hash)?;
         let options = GetOptions {
             range: Some(range),
             ..Default::default()
@@ -121,7 +119,7 @@ impl BlobStorage {
     }
 
     pub async fn delete_blob(&self, hash: &str) -> anyhow::Result<()> {
-        match self.store.delete(&self.object_path(hash)).await {
+        match self.store.delete(&self.object_path(hash)?).await {
             Ok(()) => Ok(()),
             Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(err) => Err(err.into()),
@@ -129,7 +127,7 @@ impl BlobStorage {
     }
 
     pub async fn exists(&self, hash: &str) -> anyhow::Result<bool> {
-        match self.store.head(&self.object_path(hash)).await {
+        match self.store.head(&self.object_path(hash)?).await {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
             Err(err) => Err(err.into()),
@@ -163,12 +161,8 @@ impl BlobStorage {
         Ok(hashes)
     }
 
-    fn object_path(&self, hash: &str) -> ObjectPath {
-        let safe_hash: String = hash
-            .chars()
-            .filter(|c| c.is_ascii_hexdigit())
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
+    fn object_path(&self, hash: &str) -> anyhow::Result<ObjectPath> {
+        let safe_hash = crate::util::canonical_blob_hash(hash)?;
         let first = safe_hash.get(0..2).unwrap_or("xx");
         let second = safe_hash.get(2..4).unwrap_or("xx");
         let path = match &self.prefix {
@@ -181,16 +175,12 @@ impl BlobStorage {
             ),
             None => format!("{first}/{second}/{safe_hash}"),
         };
-        ObjectPath::from(path)
+        Ok(ObjectPath::from(path))
     }
 }
 
 fn object_hash_from_path(path: &str) -> Option<String> {
-    let hash = path.rsplit('/').next()?.to_ascii_lowercase();
-    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(hash)
+    crate::util::canonical_blob_hash(path.rsplit('/').next()?).ok()
 }
 
 #[cfg(test)]
@@ -203,42 +193,45 @@ mod tests {
         let mut config = AppConfig::default();
         config.storage.local.path = temp.path().join("blobs");
         let storage = BlobStorage::from_config(&config).await.unwrap();
+        let hash = crate::util::sha256_hex(b"hello");
         storage
-            .put_blob("abcd1234", Bytes::from_static(b"hello"))
+            .put_blob(&hash, Bytes::from_static(b"hello"))
             .await
             .unwrap();
-        assert!(storage.exists("abcd1234").await.unwrap());
+        assert!(storage.exists(&hash).await.unwrap());
         assert_eq!(
-            storage.get_blob("abcd1234").await.unwrap(),
+            storage.get_blob(&hash).await.unwrap(),
             Bytes::from_static(b"hello")
         );
-        assert_eq!(storage.list_hashes().await.unwrap(), vec!["abcd1234"]);
+        assert_eq!(storage.list_hashes().await.unwrap(), vec![hash]);
+        assert!(storage.exists("ab-cd").await.is_err());
     }
 
     #[test]
     fn extracts_hash_from_backend_path() {
+        let hash = "aa".repeat(32);
         assert_eq!(
-            object_hash_from_path("aa/bb/aabbcc").as_deref(),
-            Some("aabbcc")
+            object_hash_from_path(&format!("aa/bb/{hash}")).as_deref(),
+            Some(hash.as_str())
         );
+        assert_eq!(object_hash_from_path("aa/bb/aabbcc"), None);
         assert_eq!(object_hash_from_path("aa/not-a-hash"), None);
     }
 
     #[tokio::test]
+    #[ignore = "requires MIDDEN_TEST_S3_* integration environment"]
     async fn s3_storage_round_trip_when_configured() {
-        let Ok(bucket) = std::env::var("MIDDEN_TEST_S3_BUCKET") else {
-            eprintln!("skipping S3 storage smoke; MIDDEN_TEST_S3_BUCKET is not set");
-            return;
+        let required = |name| {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("{name} must be set when this ignored test is invoked"))
         };
         let mut config = AppConfig::default();
         config.storage.backend = crate::config::StorageBackend::S3;
-        config.storage.s3.bucket = bucket;
-        config.storage.s3.region =
-            std::env::var("MIDDEN_TEST_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-        config.storage.s3.endpoint = std::env::var("MIDDEN_TEST_S3_ENDPOINT").ok();
-        config.storage.s3.access_key_id = std::env::var("MIDDEN_TEST_S3_ACCESS_KEY_ID").ok();
-        config.storage.s3.secret_access_key =
-            std::env::var("MIDDEN_TEST_S3_SECRET_ACCESS_KEY").ok();
+        config.storage.s3.bucket = required("MIDDEN_TEST_S3_BUCKET");
+        config.storage.s3.region = required("MIDDEN_TEST_S3_REGION");
+        config.storage.s3.endpoint = Some(required("MIDDEN_TEST_S3_ENDPOINT"));
+        config.storage.s3.access_key_id = Some(required("MIDDEN_TEST_S3_ACCESS_KEY_ID"));
+        config.storage.s3.secret_access_key = Some(required("MIDDEN_TEST_S3_SECRET_ACCESS_KEY"));
         config.storage.s3.prefix = Some(format!("midden-test-{}", crate::util::public_id()));
         config.storage.s3.allow_http = true;
 

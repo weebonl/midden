@@ -33,7 +33,7 @@ use crate::{
         PolicyConfig, RateLimitBackend, RateLimitConfig, RiskyMimeMode, RuntimeSettings,
         ScanDecision, ScannerAdapterConfig, SignupMode,
     },
-    db::{FileItem, NewFileItem, NewPaste, Paste, Role, User},
+    db::{FileItem, NewFileItem, Paste, Role, User},
     policy, processing, quota,
     scanner::{self, ScanInput},
     util,
@@ -42,11 +42,13 @@ use crate::{
 mod account;
 mod admin;
 mod api;
+mod api_paths;
 mod auth;
 mod browse;
 mod files;
 mod items;
 mod oidc;
+mod openapi;
 mod pastes;
 mod support;
 mod system;
@@ -88,9 +90,12 @@ async fn request_context_middleware(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
+    if request.uri().path() == "/healthz" {
+        return next.run(request).await;
+    }
     let settings = match state.settings().await {
         Ok(s) => s,
         Err(err) => {
@@ -102,28 +107,73 @@ async fn request_context_middleware(
                 .into_response();
         }
     };
-    let current_user = current_user(&state, &jar).await.unwrap_or(None);
-    let csrf_token = jar
-        .get(CSRF_COOKIE)
-        .map(|cookie| cookie.value().to_string());
+    let isolated_file_host = is_isolated_file_host(&settings, &headers);
+    let current_user = if isolated_file_host {
+        None
+    } else {
+        match current_user(&state, &jar).await {
+            Ok(user) => user,
+            Err(err) => {
+                tracing::error!(error = %err, "failed to load current user in middleware");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Html("internal server error".to_string()),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let existing_csrf_token = (!isolated_file_host)
+        .then(|| {
+            jar.get(CSRF_COOKIE)
+                .map(|cookie| cookie.value().to_string())
+        })
+        .flatten();
+    let needs_csrf_cookie = !isolated_file_host && existing_csrf_token.is_none();
+    let csrf_token = if isolated_file_host {
+        None
+    } else {
+        Some(existing_csrf_token.unwrap_or_else(util::secret_token))
+    };
+    if needs_csrf_cookie && let Some(token) = csrf_token.as_deref() {
+        let cookie_header = request
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| format!("{value}; {CSRF_COOKIE}={token}"))
+            .unwrap_or_else(|| format!("{CSRF_COOKIE}={token}"));
+        if let Ok(value) = HeaderValue::from_str(&cookie_header) {
+            request.headers_mut().insert(header::COOKIE, value);
+        }
+    }
     let is_htmx = htmx_request(&headers);
+    let secure_cookies = settings.security.secure_cookies;
 
     let ctx = RequestContext {
         templates: state.templates.clone(),
         settings,
         current_user,
-        csrf_token,
+        csrf_token: csrf_token.clone(),
         is_htmx,
     };
 
-    REQUEST_CONTEXT
+    let mut response = REQUEST_CONTEXT
         .scope(ctx, async { next.run(request).await })
-        .await
+        .await;
+    if needs_csrf_cookie && let Some(token) = csrf_token {
+        let mut cookie = Cookie::new(CSRF_COOKIE, token);
+        cookie.set_path("/");
+        cookie.set_same_site(SameSite::Lax);
+        cookie.set_secure(secure_cookies);
+        if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+    }
+    response
 }
 
 pub fn router(state: AppState) -> Router {
     let metrics_state = state.clone();
-    let csrf_state = state.clone();
 
     let file_routes = Router::new()
         .route("/files/{id}/raw", get(raw_file))
@@ -143,31 +193,28 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
-        .route("/api/docs", get(api_docs))
-        .route("/api/openapi.json", get(api_openapi))
-        .route("/api/v1/me/files", get(api_list_my_files))
-        .route("/api/v1/me/pastes", get(api_list_my_pastes))
+        .route(api_paths::DOCS, get(api_docs))
+        .route(api_paths::OPENAPI, get(api_openapi))
+        .route(api_paths::MY_FILES, get(api_list_my_files))
+        .route(api_paths::MY_PASTES, get(api_list_my_pastes))
         .route(
-            "/api/v1/files",
+            api_paths::FILES,
             post(api_upload_file.layer(DefaultBodyLimit::disable())),
         )
-        .route("/api/v1/files/{id}", delete(api_delete_file))
-        .route("/api/v1/pastes", post(api_create_paste))
-        .route("/api/v1/pastes/{id}", delete(api_delete_paste))
-        .route("/api/v1/reports", post(api_create_report))
-        .route("/api/v1/claim/{kind}/{id}", post(api_claim_item))
+        .route(api_paths::FILE, delete(api_delete_file))
+        .route(api_paths::PASTES, post(api_create_paste))
+        .route(api_paths::PASTE, delete(api_delete_paste))
+        .route(api_paths::REPORTS, post(api_create_report))
+        .route(api_paths::CLAIM, post(api_claim_item))
         .route(
-            "/api/v1/tokens",
+            api_paths::TOKENS,
             get(api_list_tokens).post(api_create_token),
         )
-        .route("/api/v1/tokens/{id}", delete(api_revoke_token))
-        .route("/api/v1/admin/reports", get(api_admin_reports))
-        .route("/api/v1/admin/reports/{id}", patch(api_admin_update_report))
-        .route(
-            "/api/v1/admin/items/{kind}/{id}",
-            patch(api_admin_update_item),
-        )
-        .route("/api/v1/admin/search", get(api_admin_search))
+        .route(api_paths::TOKEN, delete(api_revoke_token))
+        .route(api_paths::ADMIN_REPORTS, get(api_admin_reports))
+        .route(api_paths::ADMIN_REPORT, patch(api_admin_update_report))
+        .route(api_paths::ADMIN_ITEM, patch(api_admin_update_item))
+        .route(api_paths::ADMIN_SEARCH, get(api_admin_search))
         .route("/p/new", get(new_paste).post(create_paste))
         .route("/p/{id}/edit", get(edit_paste_form).post(update_paste))
         .route("/p/{id}", get(show_paste))
@@ -234,7 +281,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(app_routes)
         .merge(file_routes)
-        .layer(middleware::from_fn(api_error_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             file_origin_middleware,
@@ -243,13 +289,10 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             request_context_middleware,
         ))
+        .layer(middleware::from_fn(api_error_middleware))
         .layer(middleware::from_fn_with_state(
             metrics_state,
             request_metrics_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
-            csrf_state,
-            csrf_cookie_middleware,
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -298,54 +341,6 @@ fn is_public_file_path(path: &str) -> bool {
     util::split_slug(slug).is_some()
 }
 
-async fn csrf_cookie_middleware(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    if state
-        .settings()
-        .await
-        .is_ok_and(|settings| is_isolated_file_host(&settings, &headers))
-    {
-        return next.run(request).await;
-    }
-    let existing_token = jar
-        .get(CSRF_COOKIE)
-        .map(|cookie| cookie.value().to_string());
-    let needs_cookie = existing_token.is_none();
-    let token = existing_token.unwrap_or_else(util::secret_token);
-    if needs_cookie {
-        let cookie_header = request
-            .headers()
-            .get(header::COOKIE)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| format!("{value}; {CSRF_COOKIE}={token}"))
-            .unwrap_or_else(|| format!("{CSRF_COOKIE}={token}"));
-        if let Ok(value) = HeaderValue::from_str(&cookie_header) {
-            request.headers_mut().insert(header::COOKIE, value);
-        }
-    }
-    let mut response = next.run(request).await;
-    if needs_cookie {
-        let mut cookie = Cookie::new(CSRF_COOKIE, token);
-        cookie.set_path("/");
-        cookie.set_same_site(SameSite::Lax);
-        let secure_cookies = state
-            .settings()
-            .await
-            .map(|settings| settings.security.secure_cookies)
-            .unwrap_or(state.config.security.secure_cookies);
-        cookie.set_secure(secure_cookies);
-        if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {
-            response.headers_mut().append(header::SET_COOKIE, value);
-        }
-    }
-    response
-}
-
 async fn request_metrics_middleware(
     State(state): State<AppState>,
     request: Request,
@@ -366,18 +361,17 @@ async fn api_error_middleware(request: Request, next: Next) -> Response {
     let response = next.run(request).await;
     if wants_json && (response.status().is_client_error() || response.status().is_server_error()) {
         let status = response.status();
-        let code = status.canonical_reason().unwrap_or("error");
-        return (
-            status,
-            axum::Json(serde_json::json!({
-                "error": {
-                    "status": status.as_u16(),
-                    "code": code.to_ascii_lowercase().replace(' ', "_"),
-                    "message": code,
-                }
-            })),
-        )
-            .into_response();
+        let (mut parts, _) = response.into_parts();
+        let json_response =
+            (status, axum::Json(api::ApiErrorResponse::new(status))).into_response();
+        let (json_parts, body) = json_response.into_parts();
+        parts.headers.remove(header::CONTENT_LENGTH);
+        if let Some(content_type) = json_parts.headers.get(header::CONTENT_TYPE) {
+            parts
+                .headers
+                .insert(header::CONTENT_TYPE, content_type.clone());
+        }
+        return Response::from_parts(parts, body);
     }
     response
 }

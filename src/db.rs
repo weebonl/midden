@@ -3,8 +3,10 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+#[cfg(test)]
+use sqlx::AssertSqlSafe;
 use sqlx::{
-    Any, AnyPool, AssertSqlSafe, ConnectOptions, Row,
+    Any, AnyPool, ConnectOptions, Row,
     any::{AnyArguments, AnyConnectOptions, AnyPoolOptions},
 };
 
@@ -13,15 +15,42 @@ use crate::{
     util,
 };
 
+macro_rules! select_file_items {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
+                    size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
+                    visibility, metadata_json, thumbnail_hash, state, created_at
+             FROM files ",
+            $tail
+        )
+    };
+}
+
+macro_rules! select_pastes {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, public_id, title, content, syntax, owner_user_id, delete_token_hash,
+                    expires_at, visibility, state, created_at
+             FROM pastes ",
+            $tail
+        )
+    };
+}
+
 mod auth;
+mod blob_mutations;
 mod items;
+mod migrations;
 mod models;
 mod moderation;
+mod mutations;
 mod schema;
 mod search;
 mod settings;
 
 pub use models::*;
+#[cfg(test)]
 use schema::SCHEMA;
 
 #[derive(Debug, Clone)]
@@ -53,67 +82,6 @@ impl Database {
             .connect_with(options)
             .await?;
         Ok(Self { pool, kind })
-    }
-
-    pub async fn migrate(&self) -> anyhow::Result<()> {
-        for statement in SCHEMA.split(';') {
-            let statement = statement.trim();
-            if !statement.is_empty() {
-                sqlx::query(statement).execute(&self.pool).await?;
-            }
-        }
-        self.run_additive_migrations().await?;
-        Ok(())
-    }
-
-    async fn run_additive_migrations(&self) -> anyhow::Result<()> {
-        self.add_column_if_missing("users", "is_disabled INTEGER NOT NULL DEFAULT 0")
-            .await?;
-        let added_email_verified_at = self
-            .add_column_if_missing("users", "email_verified_at INTEGER")
-            .await?;
-        self.add_column_if_missing("users", "two_factor_enabled INTEGER NOT NULL DEFAULT 0")
-            .await?;
-        self.add_column_if_missing("api_tokens", "expires_at INTEGER")
-            .await?;
-        self.add_column_if_missing("api_tokens", "last_used_at INTEGER")
-            .await?;
-        if added_email_verified_at {
-            self.query(
-                "UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL",
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-        self.add_column_if_missing("invite_tokens", "revoked_at INTEGER")
-            .await?;
-        self.add_column_if_missing("files", "expires_at INTEGER")
-            .await?;
-        self.add_column_if_missing("files", "image_width INTEGER")
-            .await?;
-        self.add_column_if_missing("files", "image_height INTEGER")
-            .await?;
-        self.add_column_if_missing("files", "visibility TEXT NOT NULL DEFAULT 'unlisted'")
-            .await?;
-        self.add_column_if_missing("files", "metadata_json TEXT")
-            .await?;
-        self.add_column_if_missing("files", "thumbnail_hash TEXT")
-            .await?;
-        self.add_column_if_missing("pastes", "expires_at INTEGER")
-            .await?;
-        self.add_column_if_missing("pastes", "visibility TEXT NOT NULL DEFAULT 'unlisted'")
-            .await?;
-
-        Ok(())
-    }
-
-    async fn add_column_if_missing(&self, table: &str, column_def: &str) -> anyhow::Result<bool> {
-        let sql = format!("ALTER TABLE {table} ADD COLUMN {column_def}");
-        match sqlx::query(AssertSqlSafe(sql)).execute(&self.pool).await {
-            Ok(_) => Ok(true),
-            Err(err) if is_duplicate_column_error(&err) => Ok(false),
-            Err(err) => Err(err.into()),
-        }
     }
 
     fn query(&self, sql: &'static str) -> sqlx::query::Query<'static, Any, AnyArguments> {
@@ -217,13 +185,6 @@ impl Database {
     }
 }
 
-fn is_duplicate_column_error(err: &sqlx::Error) -> bool {
-    let message = err.to_string().to_lowercase();
-    message.contains("duplicate column")
-        || message.contains("already exists")
-        || message.contains("column exists")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +196,32 @@ mod tests {
         let db = Database::connect(&config).await.unwrap();
         db.migrate().await.unwrap();
         db
+    }
+
+    async fn assert_blob_mutation_lock_blocks(
+        first: &Database,
+        second: &Database,
+        first_hash: &str,
+        alias_hash: &str,
+    ) {
+        let first_mutation = first.begin_blob_mutation(first_hash).await.unwrap();
+        let waiter_db = second.clone();
+        let alias_hash = alias_hash.to_string();
+        let mut waiter =
+            tokio::spawn(async move { waiter_db.begin_blob_mutation(&alias_hash).await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(75), &mut waiter)
+                .await
+                .is_err(),
+            "a storage-path alias acquired a second blob lock"
+        );
+        first_mutation.commit().await.unwrap();
+        let second_mutation = tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("waiting blob mutation should resume after commit")
+            .expect("blob mutation task should not panic")
+            .expect("waiting blob mutation should acquire its lock");
+        second_mutation.commit().await.unwrap();
     }
 
     #[tokio::test]
@@ -335,6 +322,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn creating_file_item_without_blob_rolls_back_item_insert() {
+        let db = test_db().await;
+        let result = db
+            .create_file_item(NewFileItem {
+                id: "missing-blob-file",
+                public_id: "missingblobpub",
+                blob_hash: "missingblobhash",
+                original_filename: Some("missing.txt"),
+                extension: Some("txt"),
+                content_type: Some("text/plain"),
+                size_bytes: 4,
+                image_width: None,
+                image_height: None,
+                owner_user_id: None,
+                delete_token_hash: None,
+                expires_at: None,
+                visibility: "unlisted",
+                metadata_json: None,
+                thumbnail_hash: None,
+                state: "active",
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(db.file_by_public_id("missingblobpub").await.is_err());
+    }
+
+    #[tokio::test]
     async fn zero_ref_blobs_are_not_required_inventory() {
         let db = test_db().await;
         db.create_blob_if_missing("releasedhash", 4, Some("text/plain"))
@@ -361,10 +375,11 @@ mod tests {
         .await
         .unwrap();
 
-        db.delete_file("released-file", None, "test release")
+        let zero_ref_hash = db
+            .delete_file_and_release_blob("released-file", None, "test release")
             .await
             .unwrap();
-        assert_eq!(db.decrement_blob_ref("releasedhash").await.unwrap(), 0);
+        assert_eq!(zero_ref_hash.as_deref(), Some("releasedhash"));
 
         assert!(
             !db.blob_hashes()
@@ -496,6 +511,298 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn versioned_migrations_are_recorded_and_idempotent() {
+        let mut config = AppConfig::default();
+        config.database.url = "sqlite::memory:".to_string();
+        config.database.max_connections = 1;
+        let db = Database::connect(&config).await.unwrap();
+
+        db.migrate().await.unwrap();
+        db.migrate().await.unwrap();
+
+        let row = db
+            .query("SELECT COUNT(*) AS count FROM schema_migrations")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<i64, _>("count").unwrap(), 6);
+        let rows = db
+            .query("SELECT version, name FROM schema_migrations ORDER BY version")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        let ledger = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.try_get::<i64, _>("version").unwrap(),
+                    row.try_get::<String, _>("name").unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ledger,
+            vec![
+                (1, "baseline_schema".to_string()),
+                (2, "identity_columns_and_email_backfill".to_string()),
+                (3, "token_lifecycle_columns".to_string()),
+                (4, "item_lifecycle_columns".to_string()),
+                (5, "postgres_i64_columns_bigint".to_string()),
+                (6, "blob_mutation_locks".to_string()),
+            ]
+        );
+        for &(table, column) in migrations::POSTGRES_I64_COLUMNS
+            .iter()
+            .filter(|(table, _)| *table != "schema_migrations")
+        {
+            let declared_type = db
+                .query("SELECT type FROM pragma_table_info(?) WHERE name = ?")
+                .bind(table)
+                .bind(column)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap()
+                .try_get::<String, _>("type")
+                .unwrap();
+            assert_eq!(declared_type, "INTEGER", "{table}.{column}");
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_sqlite_migrations_serialize_one_complete_ledger() {
+        let filename = format!(".midden-migration-test-{}.db", util::public_id());
+        let path = std::env::current_dir().unwrap().join(&filename);
+        let mut config = AppConfig::default();
+        config.database.url = format!("sqlite://{filename}?mode=rwc");
+        config.database.max_connections = 2;
+        let first = Database::connect(&config).await.unwrap();
+        let second = Database::connect(&config).await.unwrap();
+
+        let (first_result, second_result) = tokio::join!(first.migrate(), second.migrate());
+        first_result.unwrap();
+        second_result.unwrap();
+
+        let row = first
+            .query(
+                "SELECT COUNT(*) AS count, COUNT(DISTINCT version) AS distinct_count
+                 FROM schema_migrations",
+            )
+            .fetch_one(&first.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<i64, _>("count").unwrap(), 6);
+        assert_eq!(row.try_get::<i64, _>("distinct_count").unwrap(), 6);
+
+        first.pool.close().await;
+        second.pool.close().await;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_blob_mutation_lock_serializes_storage_path_aliases() {
+        let filename = format!(".midden-blob-lock-test-{}.db", util::public_id());
+        let path = std::env::current_dir().unwrap().join(&filename);
+        let mut config = AppConfig::default();
+        config.database.url = format!("sqlite://{filename}?mode=rwc");
+        config.database.max_connections = 2;
+        let first = Database::connect(&config).await.unwrap();
+        first.migrate().await.unwrap();
+        let second = Database::connect(&config).await.unwrap();
+        let canonical = "ab".repeat(32);
+        let upper = canonical.to_ascii_uppercase();
+        let invalid_alias = format!("{}-{}", &upper[..32], &upper[32..]);
+
+        assert_blob_mutation_lock_blocks(&first, &second, &canonical, &upper).await;
+        assert!(first.begin_blob_mutation(&invalid_alias).await.is_err());
+
+        let row = first
+            .query("SELECT COUNT(*) AS count FROM blob_mutation_locks")
+            .fetch_one(&first.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<i64, _>("count").unwrap(), 0);
+        first.pool.close().await;
+        second.pool.close().await;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_thumbnail_workers_cannot_overwrite_a_live_reference_or_metadata() {
+        let db = test_db().await;
+        let primary_hash = "11".repeat(32);
+        let first_thumbnail_hash = "22".repeat(32);
+        let stale_thumbnail_hash = "33".repeat(32);
+        db.create_blob_if_missing(&primary_hash, 4, Some("image/png"))
+            .await
+            .unwrap();
+        db.create_file_item(NewFileItem {
+            id: "thumbnail-race-file",
+            public_id: "thumbnail-race-public",
+            blob_hash: &primary_hash,
+            original_filename: None,
+            extension: Some("png"),
+            content_type: Some("image/png"),
+            size_bytes: 4,
+            image_width: Some(1),
+            image_height: Some(1),
+            owner_user_id: None,
+            delete_token_hash: None,
+            expires_at: None,
+            visibility: "unlisted",
+            metadata_json: Some("existing metadata"),
+            thumbnail_hash: None,
+            state: "active",
+        })
+        .await
+        .unwrap();
+
+        let mut first = db.begin_blob_mutation(&first_thumbnail_hash).await.unwrap();
+        first
+            .create_blob_if_missing(4, Some("image/png"))
+            .await
+            .unwrap();
+        assert!(
+            first
+                .attach_thumbnail("thumbnail-race-public", Some("first metadata"))
+                .await
+                .unwrap()
+        );
+        first.commit().await.unwrap();
+
+        let mut stale = db.begin_blob_mutation(&stale_thumbnail_hash).await.unwrap();
+        stale
+            .create_blob_if_missing(4, Some("image/png"))
+            .await
+            .unwrap();
+        assert!(
+            !stale
+                .attach_thumbnail("thumbnail-race-public", Some("stale metadata"))
+                .await
+                .unwrap()
+        );
+        stale.commit().await.unwrap();
+
+        let file = db.file_by_public_id("thumbnail-race-public").await.unwrap();
+        assert_eq!(
+            file.thumbnail_hash.as_deref(),
+            Some(first_thumbnail_hash.as_str())
+        );
+        assert_eq!(file.metadata_json.as_deref(), Some("existing metadata"));
+
+        let mut live_thumbnail = db.begin_blob_mutation(&first_thumbnail_hash).await.unwrap();
+        assert!(!live_thumbnail.is_unreferenced().await.unwrap());
+        live_thumbnail.commit().await.unwrap();
+
+        let mut stale_thumbnail = db.begin_blob_mutation(&stale_thumbnail_hash).await.unwrap();
+        assert!(stale_thumbnail.is_unreferenced().await.unwrap());
+        assert!(stale_thumbnail.delete_if_unreferenced().await.unwrap());
+        stale_thumbnail.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_ledger_rejects_newer_schema_versions() {
+        let db = test_db().await;
+        db.query(
+            "INSERT INTO schema_migrations (version, name, applied_at)
+             VALUES (99, 'future_migration', 1)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let error = db.migrate().await.unwrap_err().to_string();
+
+        assert!(error.contains("newer than this binary"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn migration_ledger_rejects_known_version_name_mismatches() {
+        let db = test_db().await;
+        db.query("UPDATE schema_migrations SET name = 'wrong_name' WHERE version = 2")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let error = db.migrate().await.unwrap_err().to_string();
+
+        assert!(error.contains("expected"), "{error}");
+        assert!(error.contains("wrong_name"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn email_verification_backfill_retries_when_column_already_exists() {
+        let mut config = AppConfig::default();
+        config.database.url = "sqlite::memory:".to_string();
+        config.database.max_connections = 1;
+        let db = Database::connect(&config).await.unwrap();
+        db.query(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT,
+                role TEXT NOT NULL,
+                is_disabled INTEGER NOT NULL DEFAULT 0,
+                email_verified_at INTEGER,
+                created_at INTEGER NOT NULL
+             )",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.query(
+            "INSERT INTO users (
+                id, email, username, password_hash, role, is_disabled,
+                email_verified_at, created_at
+             ) VALUES ('interrupted', 'interrupted@example.test', 'interrupted', 'hash',
+                       'user', 0, NULL, 4321)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        db.migrate().await.unwrap();
+
+        let user = db.user_by_email("interrupted@example.test").await.unwrap();
+        assert_eq!(user.email_verified_at, Some(4321));
+    }
+
+    #[tokio::test]
+    async fn adopting_complete_unversioned_schema_preserves_ambiguous_unverified_users() {
+        let mut config = AppConfig::default();
+        config.database.url = "sqlite::memory:".to_string();
+        config.database.max_connections = 1;
+        let db = Database::connect(&config).await.unwrap();
+        for statement in SCHEMA
+            .split(';')
+            .map(str::trim)
+            .filter(|sql| !sql.is_empty())
+        {
+            sqlx::query(statement).execute(&db.pool).await.unwrap();
+        }
+        db.query(
+            "INSERT INTO users (
+                id, email, username, password_hash, role, is_disabled,
+                email_verified_at, two_factor_enabled, created_at
+             ) VALUES ('current-user', 'current@example.test', 'current', 'hash',
+                       'user', 0, NULL, 0, 9876)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.migrate().await.unwrap();
+
+        let user = db.user_by_email("current@example.test").await.unwrap();
+        assert_eq!(user.email_verified_at, None);
+        let row = db
+            .query("SELECT COUNT(*) AS count FROM schema_migrations")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<i64, _>("count").unwrap(), 6);
+    }
+
+    #[tokio::test]
     async fn item_state_regressions_cover_moderation_delete_and_expiry() {
         let db = test_db().await;
         db.create_blob_if_missing("statehash", 4, Some("text/plain"))
@@ -524,53 +831,138 @@ mod tests {
             .unwrap();
 
         assert_eq!(db.expired_files().await.unwrap().len(), 1);
-        db.expire_file(&file.id).await.unwrap();
+        db.expire_file_and_release_blob(&file.id).await.unwrap();
         assert!(
             db.active_file_by_public_id("statepub")
                 .await
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(db.file_by_id(&file.id).await.unwrap().state, "expired");
-
-        for state in ["quarantined", "takedown", "legal_hold"] {
-            db.update_file_state_by_public_id("statepub", state, None, "regression")
-                .await
-                .unwrap();
-            assert!(
-                db.active_file_by_public_id("statepub")
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-            assert_eq!(db.file_by_id(&file.id).await.unwrap().state, state);
-        }
-
-        db.update_file_state_by_public_id("statepub", "active", None, "regression")
-            .await
-            .unwrap();
-        let deleted = db.delete_file(&file.id, None, "regression").await.unwrap();
-        assert_eq!(deleted.public_id, "statepub");
+        assert_eq!(
+            db.file_by_public_id("statepub").await.unwrap().state,
+            "expired"
+        );
         assert!(
-            db.active_file_by_public_id("statepub")
+            !db.update_file_state_by_public_id("statepub", "active", None, "regression")
                 .await
                 .unwrap()
-                .is_none()
         );
-        assert_eq!(db.file_by_id(&file.id).await.unwrap().state, "deleted");
+        assert_eq!(
+            db.file_by_public_id("statepub").await.unwrap().state,
+            "expired"
+        );
     }
 
     #[tokio::test]
+    #[ignore = "requires MIDDEN_TEST_POSTGRES_URL"]
     async fn postgres_migration_smoke_when_configured() {
-        let Ok(url) = std::env::var("MIDDEN_TEST_POSTGRES_URL") else {
-            eprintln!("skipping Postgres migration smoke; MIDDEN_TEST_POSTGRES_URL is not set");
-            return;
-        };
+        let database_url = std::env::var("MIDDEN_TEST_POSTGRES_URL")
+            .expect("MIDDEN_TEST_POSTGRES_URL must be set when this ignored test is invoked");
+        let suffix = util::public_id()
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>();
+        let schema = format!("midden_migration_{suffix}");
+        let mut admin_config = AppConfig::default();
+        admin_config.database.url = database_url.clone();
+        let admin = Database::connect(&admin_config).await.unwrap();
+        sqlx::query(AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin.pool)
+            .await
+            .unwrap();
+
+        let mut isolated_url = url::Url::parse(&database_url).unwrap();
+        isolated_url
+            .query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
         let mut config = AppConfig::default();
-        config.database.url = url;
+        config.database.url = isolated_url.to_string();
         let db = Database::connect(&config).await.unwrap();
-        db.migrate().await.unwrap();
-        let suffix = util::public_id();
+        db.query(
+            "CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT,
+                role TEXT NOT NULL,
+                is_disabled INTEGER NOT NULL DEFAULT 0,
+                email_verified_at INTEGER,
+                created_at INTEGER NOT NULL
+             )",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.query(
+            "INSERT INTO users (
+                id, email, username, password_hash, role, is_disabled,
+                email_verified_at, created_at
+             ) VALUES ('legacy-postgres', 'legacy-postgres@example.test', 'legacy-postgres',
+                       'hash', 'user', 0, NULL, 2468)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let concurrent = db.clone();
+        let (first_migration, second_migration) = tokio::join!(db.migrate(), concurrent.migrate());
+        first_migration.unwrap();
+        second_migration.unwrap();
+        let legacy = db
+            .user_by_email("legacy-postgres@example.test")
+            .await
+            .unwrap();
+        assert_eq!(legacy.email_verified_at, Some(2468));
+        let row = db
+            .query("SELECT COUNT(*) AS count FROM schema_migrations")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<i64, _>("count").unwrap(), 6);
+
+        let lock_hash = "cd".repeat(32);
+        assert_blob_mutation_lock_blocks(&db, &db, &lock_hash, &lock_hash.to_ascii_uppercase())
+            .await;
+        let zero_ref_hash = "ef".repeat(32);
+        let mut zero_ref_mutation = db
+            .begin_blob_mutation(&zero_ref_hash.to_ascii_uppercase())
+            .await
+            .unwrap();
+        zero_ref_mutation
+            .create_blob_if_missing(1, None)
+            .await
+            .unwrap();
+        assert!(zero_ref_mutation.is_unreferenced().await.unwrap());
+        assert!(zero_ref_mutation.delete_if_unreferenced().await.unwrap());
+        zero_ref_mutation.commit().await.unwrap();
+
+        for &(table, column) in migrations::POSTGRES_I64_COLUMNS {
+            let data_type = db
+                .query(
+                    "SELECT data_type FROM information_schema.columns
+                     WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+                )
+                .bind(table)
+                .bind(column)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap()
+                .try_get::<String, _>("data_type")
+                .unwrap();
+            assert_eq!(data_type, "bigint", "{table}.{column}");
+        }
+
+        let beyond_postgres_integer = i64::from(i32::MAX) + 1;
+        db.query("UPDATE users SET created_at = ? WHERE id = 'legacy-postgres'")
+            .bind(beyond_postgres_integer)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let legacy = db
+            .user_by_email("legacy-postgres@example.test")
+            .await
+            .unwrap();
+        assert_eq!(legacy.created_at, beyond_postgres_integer);
+
         let email = format!("postgres-smoke-{suffix}@example.test");
         let user = db
             .create_user(
@@ -582,5 +974,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(user.email, email);
+        db.create_blob_if_missing("postgres-large-blob", beyond_postgres_integer, None)
+            .await
+            .unwrap();
+        db.create_file_item(NewFileItem {
+            id: "postgres-large-file",
+            public_id: &format!("postgres-large-{suffix}"),
+            blob_hash: "postgres-large-blob",
+            original_filename: None,
+            extension: None,
+            content_type: None,
+            size_bytes: beyond_postgres_integer,
+            image_width: None,
+            image_height: None,
+            owner_user_id: Some(&user.id),
+            delete_token_hash: None,
+            expires_at: None,
+            visibility: "unlisted",
+            metadata_json: None,
+            thumbnail_hash: None,
+            state: "active",
+        })
+        .await
+        .unwrap();
+        let usage = db.file_usage_for_user(Some(&user.id)).await.unwrap();
+        assert_eq!(usage.storage_bytes, beyond_postgres_integer);
+        db.pool.close().await;
+        sqlx::query(AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin.pool)
+            .await
+            .unwrap();
     }
 }

@@ -1,9 +1,14 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+mod validation;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -24,14 +29,71 @@ pub struct AppConfig {
     pub metrics: MetricsConfig,
     pub tokens: TokensConfig,
     pub moderation: ModerationConfig,
+    #[serde(skip)]
+    pub(crate) runtime_env_overrides: RuntimeEnvOverrides,
+    #[serde(skip)]
+    pub(crate) runtime_settings_base: Option<Box<RuntimeSettings>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RuntimeEnvOverrides {
+    paths: BTreeSet<Vec<String>>,
+}
+
+impl RuntimeEnvOverrides {
+    fn from_environment() -> Self {
+        Self::from_keys(std::env::vars_os().map(|(key, _)| key.to_string_lossy().into_owned()))
+    }
+
+    pub(crate) fn from_keys<I, S>(keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let paths = keys
+            .into_iter()
+            .filter_map(|key| {
+                let key = key.as_ref();
+                let suffix = key
+                    .get(..8)
+                    .filter(|prefix| prefix.eq_ignore_ascii_case("MIDDEN__"))
+                    .map(|_| &key[8..])?;
+                let path = suffix
+                    .split("__")
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_ascii_lowercase)
+                    .collect::<Vec<_>>();
+                if path.is_empty() || !RuntimeSettings::GROUP_KEYS.contains(&path[0].as_str()) {
+                    return None;
+                }
+                Some(path)
+            })
+            .collect();
+        Self { paths }
+    }
+
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &[String]> {
+        self.paths.iter().map(Vec::as_slice)
+    }
 }
 
 impl AppConfig {
     pub fn load(path: Option<PathBuf>) -> anyhow::Result<Self> {
+        // Build the file/default layer separately so runtime environment values can remain
+        // ephemeral when an administrator later persists unrelated settings.
+        let mut base_builder = config::Config::builder();
+        if let Some(path) = path.as_ref() {
+            base_builder = base_builder.add_source(config::File::from(path.clone()).required(true));
+        } else {
+            base_builder =
+                base_builder.add_source(config::File::with_name("midden.toml").required(false));
+        }
+        let base_config: Self = base_builder.build()?.try_deserialize()?;
+
         let mut builder = config::Config::builder();
 
-        if let Some(path) = path {
-            builder = builder.add_source(config::File::from(path).required(true));
+        if let Some(path) = path.as_ref() {
+            builder = builder.add_source(config::File::from(path.clone()).required(true));
         } else {
             builder = builder.add_source(config::File::with_name("midden.toml").required(false));
         }
@@ -42,24 +104,23 @@ impl AppConfig {
                 .try_parsing(true),
         );
 
-        let config: Self = builder.build()?.try_deserialize()?;
+        let mut config: Self = builder.build()?.try_deserialize()?;
+        config.runtime_env_overrides = RuntimeEnvOverrides::from_environment();
+        config.runtime_settings_base = Some(Box::new(RuntimeSettings::from_config(&base_config)));
         config.validate()?;
         Ok(config)
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.delivery.isolated_file_origin && self.delivery.public_file_base_url.is_none() {
-            anyhow::bail!("isolated file origin requires a public file base URL");
-        }
-        if self.delivery.signed_internal_urls && self.delivery.internal_url_secret.is_none() {
-            anyhow::bail!("signed internal URLs require a secret");
-        }
-        Ok(())
+        validation::validate(self)
+    }
+
+    pub fn validate_runtime_settings(&self, settings: &RuntimeSettings) -> anyhow::Result<()> {
+        validation::validate_runtime_settings(self, settings)
     }
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub bind: String,
     pub public_base_url: String,
@@ -81,7 +142,7 @@ impl Default for ServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub url: String,
     pub max_connections: u32,
@@ -97,7 +158,7 @@ impl Default for DatabaseConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     pub backend: StorageBackend,
     pub local: LocalStorageConfig,
@@ -122,7 +183,7 @@ pub enum StorageBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LocalStorageConfig {
     pub path: PathBuf,
 }
@@ -136,7 +197,7 @@ impl Default for LocalStorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct S3StorageConfig {
     pub bucket: String,
     pub region: String,
@@ -149,7 +210,7 @@ pub struct S3StorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FeatureConfig {
     pub files: bool,
     pub pastes: bool,
@@ -246,7 +307,7 @@ impl<'de> Deserialize<'de> for LimitsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExpiryGuardrailsConfig {
     pub allow_never: bool,
     pub anonymous_max_file_expiry: Option<String>,
@@ -276,7 +337,7 @@ impl Default for ExpiryGuardrailsConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct QuotaConfig {
     pub storage_bytes: Option<i64>,
     pub daily_upload_bytes: Option<i64>,
@@ -285,7 +346,7 @@ pub struct QuotaConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BrandingConfig {
     pub instance_name: String,
     pub tagline: String,
@@ -333,6 +394,7 @@ impl Default for BrandingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HomepageBlock {
     pub title: String,
     pub body: String,
@@ -341,6 +403,7 @@ pub struct HomepageBlock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NavLink {
     pub label: String,
     pub href: String,
@@ -356,7 +419,7 @@ impl NavLink {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PolicyConfig {
     pub signup: SignupMode,
     pub upload_file: ActionRule,
@@ -415,7 +478,7 @@ pub enum DeletePolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SecurityConfig {
     pub session_cookie_name: String,
     pub session_ttl_seconds: i64,
@@ -452,7 +515,7 @@ pub enum RateLimitBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ContentPolicyConfig {
     pub allowed_mime_types: Vec<String>,
     pub forced_attachment_mime_types: Vec<String>,
@@ -477,7 +540,7 @@ impl Default for ContentPolicyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DeliveryConfig {
     pub public_cache_seconds: u64,
     pub static_cache_seconds: u64,
@@ -518,7 +581,7 @@ pub enum RiskyMimeMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UrlUploadSecurityConfig {
     pub block_private_ips: bool,
     pub max_redirects: usize,
@@ -550,6 +613,7 @@ impl Default for UrlUploadSecurityConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     pub requests: u32,
     pub window_seconds: u64,
@@ -557,7 +621,7 @@ pub struct RateLimitConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SmtpConfig {
     pub enabled: bool,
     pub host: Option<String>,
@@ -568,7 +632,7 @@ pub struct SmtpConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OidcConfig {
     pub enabled: bool,
     pub issuer_url: Option<String>,
@@ -583,7 +647,7 @@ pub struct OidcConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScanningConfig {
     pub enabled: bool,
     pub adapters: Vec<ScannerAdapterConfig>,
@@ -605,7 +669,7 @@ impl Default for ScanningConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProcessingConfig {
     pub metadata_extraction: bool,
     pub metadata_stripping: bool,
@@ -627,7 +691,7 @@ impl Default for ProcessingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DiscoveryConfig {
     pub robots_index: bool,
     pub page_size: u32,
@@ -643,7 +707,7 @@ impl Default for DiscoveryConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct JobsConfig {
     pub enabled: bool,
     pub interval_seconds: u64,
@@ -665,13 +729,13 @@ impl Default for JobsConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct UploadsConfig {
     pub temp_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MetricsConfig {
     pub enabled: bool,
     pub access: MetricsAccessMode,
@@ -699,21 +763,21 @@ pub enum MetricsAccessMode {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TokensConfig {
     pub default_ttl_seconds: Option<i64>,
     pub max_ttl_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModerationConfig {
     pub notify_webhook_url: Option<String>,
     pub notify_webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScannerAdapterConfig {
     ClamAv { socket: String },
     Command { program: String, args: Vec<String> },
@@ -728,7 +792,8 @@ pub enum ScanDecision {
     Reject,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeSettings {
     pub features: FeatureConfig,
     pub limits: LimitsConfig,
@@ -746,30 +811,65 @@ pub struct RuntimeSettings {
     pub moderation: ModerationConfig,
 }
 
-impl RuntimeSettings {
-    pub fn from_config(config: &AppConfig) -> Self {
-        Self {
-            features: config.features.clone(),
-            limits: config.limits.clone(),
-            branding: config.branding.clone(),
-            policy: config.policy.clone(),
-            security: config.security.clone(),
-            delivery: config.delivery.clone(),
-            scanning: config.scanning.clone(),
-            processing: config.processing.clone(),
-            discovery: config.discovery.clone(),
-            jobs: config.jobs.clone(),
-            uploads: config.uploads.clone(),
-            metrics: config.metrics.clone(),
-            tokens: config.tokens.clone(),
-            moderation: config.moderation.clone(),
+macro_rules! runtime_setting_groups {
+    ($callback:ident) => {
+        $callback!(
+            features, limits, branding, policy, security, delivery, scanning, processing,
+            discovery, jobs, uploads, metrics, tokens, moderation,
+        );
+    };
+}
+
+macro_rules! define_runtime_setting_descriptor {
+    ($($group:ident),+ $(,)?) => {
+        pub const GROUP_KEYS: &'static [&'static str] = &[$(stringify!($group)),+];
+
+        pub(crate) fn apply_group_json(
+            &mut self,
+            key: &str,
+            value: &str,
+        ) -> anyhow::Result<bool> {
+            match key {
+                $(
+                    stringify!($group) => {
+                        self.$group = serde_json::from_str(value)?;
+                        Ok(true)
+                    }
+                )+
+                _ => Ok(false),
+            }
         }
-    }
+
+        pub(crate) fn serialized_groups(
+            &self,
+        ) -> anyhow::Result<Vec<(&'static str, String)>> {
+            Ok(vec![$(
+                (stringify!($group), serde_json::to_string_pretty(&self.$group)?),
+            )+])
+        }
+
+        pub fn from_config(config: &AppConfig) -> Self {
+            Self {
+                $($group: config.$group.clone(),)+
+            }
+        }
+    };
+}
+
+impl RuntimeSettings {
+    runtime_setting_groups!(define_runtime_setting_descriptor);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_toml(source: &str) -> Result<AppConfig, config::ConfigError> {
+        config::Config::builder()
+            .add_source(config::File::from_str(source, config::FileFormat::Toml))
+            .build()?
+            .try_deserialize::<AppConfig>()
+    }
 
     #[test]
     fn explicit_config_path_must_exist() {
@@ -795,6 +895,42 @@ mod tests {
     }
 
     #[test]
+    fn unknown_fields_are_rejected_across_configuration_sections() {
+        for source in [
+            "unknown_top_level = true",
+            "[server]\nbnd = '127.0.0.1:8080'",
+            "[security]\nsecure_cookie = true",
+            "[storage.s3]\nsecret_key = 'wrong-name'",
+            "[smtp]\nhots = 'smtp.example.test'",
+            "[[scanning.adapters]]\nkind = 'command'\nprogram = 'scan'\nargs = []\nunexpected = true",
+        ] {
+            assert!(
+                parse_toml(source).is_err(),
+                "accepted unknown field in {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_environment_fields_are_rejected_without_mutating_process_environment() {
+        let source = std::collections::HashMap::from([(
+            "MIDDEN__SECURITY__SECURE_COOKIE".to_string(),
+            "true".to_string(),
+        )]);
+        let result = config::Config::builder()
+            .add_source(
+                config::Environment::with_prefix("MIDDEN")
+                    .separator("__")
+                    .try_parsing(true)
+                    .source(Some(source)),
+            )
+            .build()
+            .unwrap()
+            .try_deserialize::<AppConfig>();
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn metrics_are_not_publicly_enabled_by_default() {
         let metrics = MetricsConfig::default();
         assert!(!metrics.enabled);
@@ -812,5 +948,112 @@ mod tests {
         config.delivery.signed_internal_urls = true;
         config.delivery.internal_url_secret = None;
         assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.delivery.isolated_file_origin = true;
+        config.delivery.public_file_base_url = Some(String::new());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn semantic_validation_rejects_unusable_integrations_and_ranges() {
+        let mut config = AppConfig::default();
+        config.server.bind = "not-a-socket".to_string();
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.server.public_base_url = "files.example.test".to_string();
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.database.url = "mysql://localhost/midden".to_string();
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.database.max_connections = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.storage.backend = StorageBackend::S3;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.storage.backend = StorageBackend::S3;
+        config.storage.s3.bucket = "midden".to_string();
+        config.storage.s3.endpoint = Some("http://127.0.0.1:9000".to_string());
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.smtp.enabled = true;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.oidc.enabled = true;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.metrics.enabled = true;
+        config.metrics.access = MetricsAccessMode::Token;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.jobs.interval_seconds = 1;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.tokens.default_ttl_seconds = Some(20);
+        config.tokens.max_ttl_seconds = Some(10);
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.limits.default_file_expiry = Some("9223372036854775808d".to_string());
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::default();
+        config.limits.expiry.allowed_presets = vec!["9223372036854775807h".to_string()];
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn checked_in_example_is_strictly_valid() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("midden.example.toml");
+        let config = config::Config::builder()
+            .add_source(config::File::from(path).required(true))
+            .build()
+            .unwrap()
+            .try_deserialize::<AppConfig>()
+            .unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn runtime_environment_paths_are_captured_purely_and_only_for_runtime_groups() {
+        let overrides = RuntimeEnvOverrides::from_keys([
+            "MIDDEN__SECURITY__SECURE_COOKIES",
+            "midden__features__api",
+            "MIDDEN__SERVER__BIND",
+            "OTHER__METRICS__ENABLED",
+        ]);
+        let paths = overrides.paths().map(<[_]>::to_vec).collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                vec!["features".to_string(), "api".to_string()],
+                vec!["security".to_string(), "secure_cookies".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_settings_use_the_same_semantic_validation() {
+        let config = AppConfig::default();
+        let mut settings = RuntimeSettings::from_config(&config);
+        settings.jobs.interval_seconds = 1;
+        assert!(config.validate_runtime_settings(&settings).is_err());
+
+        let mut settings = RuntimeSettings::from_config(&config);
+        settings.delivery.isolated_file_origin = true;
+        settings.delivery.public_file_base_url = Some(String::new());
+        assert!(config.validate_runtime_settings(&settings).is_err());
     }
 }

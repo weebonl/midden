@@ -32,6 +32,13 @@ pub fn sha256_hex_bytes(bytes: &Bytes) -> String {
     sha256_hex(bytes.as_ref())
 }
 
+pub fn canonical_blob_hash(hash: &str) -> anyhow::Result<String> {
+    if hash.len() != 64 || !hash.chars().all(|character| character.is_ascii_hexdigit()) {
+        anyhow::bail!("blob hash must be exactly 64 hexadecimal characters");
+    }
+    Ok(hash.to_ascii_lowercase())
+}
+
 pub fn hash_token(token: &str) -> String {
     sha256_hex(token.as_bytes())
 }
@@ -191,6 +198,16 @@ fn valid_dimensions(width: u32, height: u32) -> Option<(i64, i64)> {
 }
 
 pub fn parse_expiry(input: Option<&str>) -> anyhow::Result<Option<i64>> {
+    let Some(duration) = parse_expiry_duration(input)? else {
+        return Ok(None);
+    };
+    let expires_at = now_ts()
+        .checked_add(duration)
+        .ok_or_else(|| anyhow::anyhow!("expiry is too far in the future"))?;
+    Ok(Some(expires_at))
+}
+
+fn parse_expiry_duration(input: Option<&str>) -> anyhow::Result<Option<i64>> {
     let Some(input) = input.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
@@ -208,7 +225,10 @@ pub fn parse_expiry(input: Option<&str>) -> anyhow::Result<Option<i64>> {
     if count <= 0 {
         anyhow::bail!("expiry must be positive");
     }
-    Ok(Some(now_ts() + count.saturating_mul(multiplier)))
+    count
+        .checked_mul(multiplier)
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("expiry duration is too large"))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -245,6 +265,8 @@ mod tests {
         assert!(parse_expiry(Some("never")).unwrap().is_none());
         assert!(parse_expiry(Some("1h")).unwrap().unwrap() > now_ts());
         assert!(parse_expiry(Some("2d")).unwrap().unwrap() > now_ts());
+        assert!(parse_expiry(Some("9223372036854775808d")).is_err());
+        assert!(parse_expiry(Some("9223372036854775807h")).is_err());
     }
 
     #[test]

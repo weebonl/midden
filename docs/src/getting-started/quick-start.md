@@ -4,7 +4,7 @@ This quick start runs Midden from source with the default SQLite database and lo
 
 ## Prerequisites
 
-- Rust stable with Cargo.
+- Rust 1.95 or newer with Cargo. The checked-in toolchain file pins 1.95.0 for reproducible local and CI builds.
 - A checkout of the Midden repository.
 - A shell with network access for the first dependency build.
 

@@ -9,8 +9,8 @@ build-dir = "book"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/weebonl/midden"
-edit-url-template = "https://github.com/weebonl/midden/edit/main/docs/{path}"
+git-repository-url = "https://github.com/catgirlcamp/midden"
+edit-url-template = "https://github.com/catgirlcamp/midden/edit/main/docs/{path}"
 site-url = "/midden/"
 
 [output.html.search]

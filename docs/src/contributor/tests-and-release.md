@@ -11,13 +11,13 @@ cargo fmt --all -- --check
 Run clippy:
 
 ```console
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 ```
 
 Run tests:
 
 ```console
-cargo test --workspace --all-features
+cargo test --locked --workspace --all-features
 ```
 
 Run docs checks:
@@ -25,6 +25,29 @@ Run docs checks:
 ```console
 mdbook build docs
 mdbook test docs
+```
+
+Validate both Compose models:
+
+```console
+docker compose -f docker-compose.yml -f docker-compose.sqlite.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.postgres-minio.yml config --quiet
+```
+
+PostgreSQL and S3 integration tests are ignored by the default suite because they require external services. Supply every listed environment variable and invoke each test explicitly; the tests fail instead of silently skipping when their environment is incomplete:
+
+```console
+MIDDEN_TEST_POSTGRES_URL=postgres://midden:midden@localhost:5432/midden \
+  cargo test --locked db::tests::postgres_migration_smoke_when_configured -- \
+  --ignored --exact --nocapture
+
+MIDDEN_TEST_S3_BUCKET=midden \
+MIDDEN_TEST_S3_REGION=us-east-1 \
+MIDDEN_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
+MIDDEN_TEST_S3_ACCESS_KEY_ID=midden \
+MIDDEN_TEST_S3_SECRET_ACCESS_KEY=midden-secret \
+  cargo test --locked storage::tests::s3_storage_round_trip_when_configured -- \
+  --ignored --exact --nocapture
 ```
 
 Check whitespace before committing:

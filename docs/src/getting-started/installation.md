@@ -35,6 +35,20 @@ secure_cookies = true
 
 For local-only development, the defaults are enough.
 
+## Run The Container Directly
+
+The image defaults to listening on `0.0.0.0:8080`. Its default SQLite database and local blob paths are under the `/var/lib/midden` working directory, so mount that directory for persistence:
+
+```console
+docker build -t midden:local .
+docker run --rm -p 8080:8080 \
+  -v midden-data:/var/lib/midden \
+  -e MIDDEN__SERVER__PUBLIC_BASE_URL=http://localhost:8080 \
+  midden:local
+```
+
+The image health check requests `/healthz`. Use the Compose models for the PostgreSQL and S3-compatible layout.
+
 ## Migrate
 
 Run migrations before serving, or let `midden serve` apply them at startup:

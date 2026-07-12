@@ -1,4 +1,5 @@
 use super::*;
+use crate::{commands, domain::ItemKind};
 
 pub(super) fn render_unavailable_item(
     state: &AppState,
@@ -57,45 +58,16 @@ pub(super) async fn create_report(
     let user = current_user(&state, &jar).await?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     enforce_rate_limit(&state, &settings, "report", &headers, user.as_ref()).await?;
-    state
-        .db
-        .create_report(
-            &kind,
-            &id,
-            user.as_ref().map(|user| user.id.as_str()),
-            &form.reason,
-            form.details.as_deref().unwrap_or(""),
-        )
-        .await?;
-    state.metrics.reports.inc();
-
-    if let Err(err) = trigger_moderation_webhook(
+    commands::create_report(
+        &state,
         &settings,
-        &kind,
+        ItemKind::parse(&kind)?,
         &id,
-        user.as_ref().map(|u| u.id.as_str()),
+        user.as_ref().map(|user| user.id.as_str()),
         &form.reason,
         form.details.as_deref().unwrap_or(""),
     )
-    .await
-    {
-        tracing::error!(error = %err, "failed to trigger moderation webhook");
-    }
-
-    if let Some(abuse_email) = &settings.branding.abuse_email {
-        let _ = state
-            .mailer
-            .send(
-                abuse_email,
-                "New Midden report",
-                &format!(
-                    "A report was submitted for {kind} {id}.\n\nReason: {}\n\nDetails:\n{}",
-                    form.reason,
-                    form.details.as_deref().unwrap_or("")
-                ),
-            )
-            .await?;
-    }
+    .await?;
     Ok(Redirect::to("/"))
 }
 
@@ -138,18 +110,13 @@ pub(super) async fn delete_item(
                 .await?
                 .ok_or(AppError::NotFound)?;
             authorize_file_delete(&settings, user.as_ref(), &file, form.token.as_deref())?;
-            let deleted = state
-                .db
-                .delete_file(
-                    &file.id,
-                    user.as_ref().map(|user| user.id.as_str()),
-                    "web delete",
-                )
-                .await?;
-            let remaining_refs = state.db.decrement_blob_ref(&deleted.blob_hash).await?;
-            if remaining_refs == 0 {
-                state.storage.delete_blob(&deleted.blob_hash).await?;
-            }
+            commands::delete_file(
+                &state,
+                &file,
+                user.as_ref().map(|user| user.id.as_str()),
+                "web delete",
+            )
+            .await?;
         }
         "paste" => {
             let paste = state
@@ -158,14 +125,13 @@ pub(super) async fn delete_item(
                 .await
                 .map_err(|_| AppError::NotFound)?;
             authorize_paste_delete(&settings, user.as_ref(), &paste, form.token.as_deref())?;
-            state
-                .db
-                .delete_paste(
-                    &paste.id,
-                    user.as_ref().map(|user| user.id.as_str()),
-                    "web delete",
-                )
-                .await?;
+            commands::delete_paste(
+                &state,
+                &paste,
+                user.as_ref().map(|user| user.id.as_str()),
+                "web delete",
+            )
+            .await?;
         }
         _ => return Err(AppError::NotFound),
     }
@@ -219,31 +185,7 @@ pub(super) async fn claim_item(
     if !policy::allowed(settings.policy.claim_anonymous_item, Some(&user)) {
         return Err(AppError::Forbidden);
     }
-    let token = form.token.trim();
-    if token.is_empty() {
-        return Err(AppError::BadRequest("claim token is required".to_string()));
-    }
-    let token_hash = util::hash_token(token);
-    let claimed = match kind.as_str() {
-        "file" => {
-            state
-                .db
-                .claim_file_by_public_id(&id, &user.id, &token_hash)
-                .await?
-        }
-        "paste" => {
-            state
-                .db
-                .claim_paste_by_public_id(&id, &user.id, &token_hash)
-                .await?
-        }
-        _ => return Err(AppError::NotFound),
-    };
-    if !claimed {
-        return Err(AppError::BadRequest(
-            "invalid token or item is not claimable".to_string(),
-        ));
-    }
+    commands::claim_item(&state, ItemKind::parse(&kind)?, &id, &user.id, &form.token).await?;
     Ok(Redirect::to("/account"))
 }
 

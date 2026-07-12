@@ -1,6 +1,9 @@
 use super::*;
+use crate::{
+    commands,
+    domain::{AccountBulkAction, ItemVisibility},
+};
 use axum_extra::extract::Form as HtmlForm;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AccountQuery {
@@ -80,27 +83,27 @@ pub(super) async fn account_create_token(
     let oidc_link_enabled = oidc::enabled(&state, &settings);
     validate_csrf(&jar, form.csrf_token.as_deref())?;
     let scopes = parse_scopes(&form.scopes);
-    if scopes.is_empty() {
-        return Err(AppError::BadRequest(
-            "at least one scope is required".to_string(),
-        ));
-    }
-    let expires_at = account_token_expires_at(&settings, form.expires_in_seconds.as_deref())?;
-    let token = format!("mdd_{}", util::secret_token());
-    state
-        .db
-        .create_api_token_with_expiry(
-            &user.id,
-            &form.name,
-            &util::hash_token(&token),
-            &scopes,
-            expires_at,
-        )
-        .await?;
-    state
-        .db
-        .audit(Some(&user.id), "api_token.created", &user.id, &form.name)
-        .await?;
+    let requested_ttl_seconds = form
+        .expires_in_seconds
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .map_err(|err| AppError::BadRequest(format!("invalid token TTL seconds: {err}")))
+        })
+        .transpose()?;
+    let created = commands::create_token(
+        &state,
+        &settings,
+        &user,
+        &form.name,
+        &scopes,
+        requested_ttl_seconds,
+    )
+    .await?;
+    let token = created.token;
     let tokens = state.db.list_api_tokens(&user.id).await?;
     if htmx_request(&headers) {
         return Ok(render(
@@ -138,38 +141,6 @@ pub(super) async fn account_create_token(
     .into_response())
 }
 
-fn account_token_expires_at(
-    settings: &RuntimeSettings,
-    requested_ttl_seconds: Option<&str>,
-) -> AppResult<Option<i64>> {
-    let requested = requested_ttl_seconds
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value
-                .parse::<i64>()
-                .map_err(|err| AppError::BadRequest(format!("invalid token TTL seconds: {err}")))
-        })
-        .transpose()?;
-    let ttl = requested.or(settings.tokens.default_ttl_seconds);
-    let Some(ttl) = ttl else {
-        return Ok(None);
-    };
-    if ttl <= 0 {
-        return Err(AppError::BadRequest(
-            "token TTL must be positive".to_string(),
-        ));
-    }
-    if let Some(max) = settings.tokens.max_ttl_seconds
-        && ttl > max
-    {
-        return Err(AppError::BadRequest(
-            "token TTL exceeds configured maximum".to_string(),
-        ));
-    }
-    Ok(Some(util::now_ts().saturating_add(ttl)))
-}
-
 pub(super) async fn account_revoke_token(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -186,11 +157,7 @@ pub(super) async fn account_revoke_token(
         .await?
         .ok_or(AppError::Unauthorized)?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
-    state.db.revoke_api_token(&user.id, &id).await?;
-    state
-        .db
-        .audit(Some(&user.id), "api_token.revoked", &user.id, &id)
-        .await?;
+    commands::revoke_token(&state, &user, &id).await?;
     if htmx_request(&headers) {
         let tokens = state.db.list_api_tokens(&user.id).await?;
         Ok(render(
@@ -230,67 +197,20 @@ pub(super) async fn account_bulk_items(
         .await?
         .ok_or(AppError::Unauthorized)?;
     validate_csrf(&jar, form.csrf_token.as_deref())?;
-    let file_ids = form
-        .file_ids
-        .unwrap_or_default()
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let paste_ids = form
-        .paste_ids
-        .unwrap_or_default()
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    match form.bulk_action.as_str() {
-        "delete" => {
-            for id in &file_ids {
-                let file = state.db.file_by_public_id(id).await?;
-                authorize_file_delete(&settings, Some(&user), &file, None)?;
-                let deleted = state
-                    .db
-                    .delete_file(&file.id, Some(&user.id), "account bulk delete")
-                    .await?;
-                if deleted.state == "active" {
-                    let remaining_refs = state.db.decrement_blob_ref(&deleted.blob_hash).await?;
-                    if remaining_refs == 0 {
-                        state.storage.delete_blob(&deleted.blob_hash).await?;
-                    }
-                }
-            }
-            for id in &paste_ids {
-                let paste = state.db.paste_by_public_id_any(id).await?;
-                authorize_paste_delete(&settings, Some(&user), &paste, None)?;
-                state
-                    .db
-                    .delete_paste(&paste.id, Some(&user.id), "account bulk delete")
-                    .await?;
-            }
-        }
+    let action = match form.bulk_action.as_str() {
+        "delete" => AccountBulkAction::Delete,
         "set_visibility" => {
             let visibility = requested_visibility(&settings, form.visibility.as_deref())?;
-            for id in &file_ids {
-                let file = state.db.file_by_public_id(id).await?;
-                if file.owner_user_id.as_deref() == Some(user.id.as_str()) {
-                    state.db.set_file_visibility(id, visibility).await?;
-                }
-            }
-            for id in &paste_ids {
-                let paste = state.db.paste_by_public_id_any(id).await?;
-                if paste.owner_user_id.as_deref() == Some(user.id.as_str()) {
-                    state.db.set_paste_visibility(id, visibility).await?;
-                }
-            }
+            AccountBulkAction::SetVisibility(ItemVisibility::parse(&settings, visibility)?)
         }
         "set_expiry" => {
-            let expires_at = parse_expiry_or_default_checked(
+            let file_expires_at = parse_expiry_or_default_checked(
                 &settings,
                 Some(&user),
                 "file",
                 form.expires.as_deref(),
                 None,
             )?;
-            for id in &file_ids {
-                state.db.set_file_expiry(id, &user.id, expires_at).await?;
-            }
             let paste_expires_at = parse_expiry_or_default_checked(
                 &settings,
                 Some(&user),
@@ -298,24 +218,21 @@ pub(super) async fn account_bulk_items(
                 form.expires.as_deref(),
                 None,
             )?;
-            for id in &paste_ids {
-                state
-                    .db
-                    .set_paste_expiry(id, &user.id, paste_expires_at)
-                    .await?;
+            AccountBulkAction::SetExpiry {
+                file_expires_at,
+                paste_expires_at,
             }
         }
         _ => return Err(AppError::BadRequest("unknown bulk action".to_string())),
-    }
-    state
-        .db
-        .audit(
-            Some(&user.id),
-            "account.bulk_items",
-            &user.id,
-            &form.bulk_action,
-        )
-        .await?;
+    };
+    commands::apply_account_bulk(
+        &state,
+        &user,
+        form.file_ids.unwrap_or_default(),
+        form.paste_ids.unwrap_or_default(),
+        action,
+    )
+    .await?;
     Ok(Redirect::to("/account"))
 }
 

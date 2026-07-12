@@ -3,7 +3,16 @@ use super::*;
 impl Database {
     pub async fn blob_hashes(&self) -> anyhow::Result<Vec<String>> {
         let rows = self
-            .query("SELECT hash FROM blobs WHERE ref_count > 0 ORDER BY hash")
+            .query(
+                "SELECT hash FROM blobs
+                 WHERE ref_count > 0
+                    OR EXISTS (
+                        SELECT 1 FROM files
+                        WHERE files.thumbnail_hash = blobs.hash
+                          AND files.state NOT IN ('deleted', 'expired')
+                    )
+                 ORDER BY hash",
+            )
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(|row| Ok(row.try_get("hash")?)).collect()
@@ -19,6 +28,7 @@ impl Database {
         Ok(row.try_get("ref_count")?)
     }
 
+    #[cfg(test)]
     pub async fn create_blob_if_missing(
         &self,
         hash: &str,
@@ -39,35 +49,9 @@ impl Database {
         Ok(())
     }
 
-    pub async fn increment_blob_ref(&self, hash: &str) -> anyhow::Result<()> {
-        self.query("UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?")
-            .bind(hash)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn decrement_blob_ref(&self, hash: &str) -> anyhow::Result<i64> {
-        self.query("UPDATE blobs SET ref_count = CASE WHEN ref_count > 0 THEN ref_count - 1 ELSE 0 END WHERE hash = ?")
-            .bind(hash)
-            .execute(&self.pool)
-            .await?;
-        let row = self
-            .query("SELECT ref_count FROM blobs WHERE hash = ?")
-            .bind(hash)
-            .fetch_one(&self.pool)
-            .await?;
-        let ref_count = row.try_get("ref_count")?;
-        if ref_count == 0 {
-            self.query("DELETE FROM blobs WHERE hash = ? AND ref_count = 0")
-                .bind(hash)
-                .execute(&self.pool)
-                .await?;
-        }
-        Ok(ref_count)
-    }
-
+    #[cfg(test)]
     pub async fn create_file_item(&self, new: NewFileItem<'_>) -> anyhow::Result<FileItem> {
+        let mut transaction = self.pool.begin().await?;
         self.query(
             "INSERT INTO files (
                 id, public_id, blob_hash, original_filename, extension, content_type,
@@ -92,20 +76,30 @@ impl Database {
         .bind(new.thumbnail_hash)
         .bind(new.state)
         .bind(util::now_ts())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.increment_blob_ref(new.blob_hash).await?;
-        self.file_by_public_id(new.public_id).await
+        let referenced = self
+            .query("UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?")
+            .bind(new.blob_hash)
+            .execute(&mut *transaction)
+            .await?;
+        if referenced.rows_affected() != 1 {
+            transaction.rollback().await?;
+            anyhow::bail!("cannot create file item without an existing blob record");
+        }
+        let row = self
+            .query(select_file_items!("WHERE public_id = ?"))
+            .bind(new.public_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        let file = FileItem::from_row(&row)?;
+        transaction.commit().await?;
+        Ok(file)
     }
 
     pub async fn file_by_public_id(&self, public_id: &str) -> anyhow::Result<FileItem> {
         let row = self
-            .query(
-                "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                    size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                    visibility, metadata_json, thumbnail_hash, state, created_at
-             FROM files WHERE public_id = ?",
-            )
+            .query(select_file_items!("WHERE public_id = ?"))
             .bind(public_id)
             .fetch_one(&self.pool)
             .await?;
@@ -116,52 +110,15 @@ impl Database {
         &self,
         public_id: &str,
     ) -> anyhow::Result<Option<FileItem>> {
-        let row = self.query(
-            "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                    size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                    visibility, metadata_json, thumbnail_hash, state, created_at
-             FROM files WHERE public_id = ? AND state = 'active' AND (expires_at IS NULL OR expires_at > ?)",
-        )
+        let row = self
+            .query(select_file_items!(
+                "WHERE public_id = ? AND state = 'active' AND (expires_at IS NULL OR expires_at > ?)"
+            ))
         .bind(public_id)
         .bind(util::now_ts())
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| FileItem::from_row(&row)).transpose()
-    }
-
-    pub async fn delete_file(
-        &self,
-        file_id: &str,
-        actor_user_id: Option<&str>,
-        reason: &str,
-    ) -> anyhow::Result<FileItem> {
-        let file = self.file_by_id(file_id).await?;
-        if file.state != "active" {
-            return Ok(file);
-        }
-        self.query("UPDATE files SET state = 'deleted' WHERE id = ? AND state = 'active'")
-            .bind(file_id)
-            .execute(&self.pool)
-            .await?;
-        self.audit(actor_user_id, "file.deleted", file_id, reason)
-            .await?;
-        Ok(file)
-    }
-
-    pub async fn delete_paste(
-        &self,
-        paste_id: &str,
-        actor_user_id: Option<&str>,
-        reason: &str,
-    ) -> anyhow::Result<Paste> {
-        let paste = self.paste_by_id(paste_id).await?;
-        self.query("UPDATE pastes SET state = 'deleted' WHERE id = ?")
-            .bind(paste_id)
-            .execute(&self.pool)
-            .await?;
-        self.audit(actor_user_id, "paste.deleted", paste_id, reason)
-            .await?;
-        Ok(paste)
     }
 
     pub async fn claim_file_by_public_id(
@@ -216,20 +173,6 @@ impl Database {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn file_by_id(&self, id: &str) -> anyhow::Result<FileItem> {
-        let row = self
-            .query(
-                "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                    size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                    visibility, metadata_json, thumbnail_hash, state, created_at
-             FROM files WHERE id = ?",
-            )
-            .bind(id)
-            .fetch_one(&self.pool)
-            .await?;
-        FileItem::from_row(&row)
-    }
-
     pub async fn create_paste(&self, new: NewPaste<'_>) -> anyhow::Result<Paste> {
         self.query(
             "INSERT INTO pastes (
@@ -253,11 +196,10 @@ impl Database {
     }
 
     pub async fn paste_by_public_id(&self, public_id: &str) -> anyhow::Result<Paste> {
-        let row = self.query(
-            "SELECT id, public_id, title, content, syntax, owner_user_id, delete_token_hash,
-                    expires_at, visibility, state, created_at
-             FROM pastes WHERE public_id = ? AND state = 'active' AND (expires_at IS NULL OR expires_at > ?)",
-        )
+        let row = self
+            .query(select_pastes!(
+                "WHERE public_id = ? AND state = 'active' AND (expires_at IS NULL OR expires_at > ?)"
+            ))
         .bind(public_id)
         .bind(util::now_ts())
         .fetch_one(&self.pool)
@@ -267,11 +209,7 @@ impl Database {
 
     pub async fn paste_by_public_id_any(&self, public_id: &str) -> anyhow::Result<Paste> {
         let row = self
-            .query(
-                "SELECT id, public_id, title, content, syntax, owner_user_id, delete_token_hash,
-                    expires_at, visibility, state, created_at
-             FROM pastes WHERE public_id = ?",
-            )
+            .query(select_pastes!("WHERE public_id = ?"))
             .bind(public_id)
             .fetch_one(&self.pool)
             .await?;
@@ -330,23 +268,14 @@ impl Database {
     pub async fn expired_files(&self) -> anyhow::Result<Vec<FileItem>> {
         let rows = self
             .query(
-                "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                    size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                    visibility, metadata_json, thumbnail_hash, state, created_at
-             FROM files WHERE state IN ('active', 'quarantined') AND expires_at IS NOT NULL AND expires_at <= ?",
+                select_file_items!(
+                    "WHERE state IN ('active', 'quarantined') AND expires_at IS NOT NULL AND expires_at <= ?"
+                ),
             )
             .bind(util::now_ts())
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(FileItem::from_row).collect()
-    }
-
-    pub async fn expire_file(&self, file_id: &str) -> anyhow::Result<()> {
-        self.query("UPDATE files SET state = 'expired' WHERE id = ?")
-            .bind(file_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 
     pub async fn expire_due_pastes(&self) -> anyhow::Result<u64> {
@@ -375,11 +304,7 @@ impl Database {
 
     pub async fn paste_by_id(&self, id: &str) -> anyhow::Result<Paste> {
         let row = self
-            .query(
-                "SELECT id, public_id, title, content, syntax, owner_user_id, delete_token_hash,
-                    expires_at, visibility, state, created_at
-             FROM pastes WHERE id = ?",
-            )
+            .query(select_pastes!("WHERE id = ?"))
             .bind(id)
             .fetch_one(&self.pool)
             .await?;
@@ -388,78 +313,32 @@ impl Database {
 }
 
 impl Database {
-    pub async fn set_file_visibility(
-        &self,
-        public_id: &str,
-        visibility: &str,
-    ) -> anyhow::Result<bool> {
-        let result = self
-            .query("UPDATE files SET visibility = ? WHERE public_id = ?")
-            .bind(visibility)
-            .bind(public_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn set_paste_visibility(
-        &self,
-        public_id: &str,
-        visibility: &str,
-    ) -> anyhow::Result<bool> {
-        let result = self
-            .query("UPDATE pastes SET visibility = ? WHERE public_id = ?")
-            .bind(visibility)
-            .bind(public_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn set_file_expiry(
-        &self,
-        public_id: &str,
-        owner_user_id: &str,
-        expires_at: Option<i64>,
-    ) -> anyhow::Result<bool> {
-        let result = self
-            .query("UPDATE files SET expires_at = ? WHERE public_id = ? AND owner_user_id = ?")
-            .bind(expires_at)
-            .bind(public_id)
-            .bind(owner_user_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn set_paste_expiry(
-        &self,
-        public_id: &str,
-        owner_user_id: &str,
-        expires_at: Option<i64>,
-    ) -> anyhow::Result<bool> {
-        let result = self
-            .query("UPDATE pastes SET expires_at = ? WHERE public_id = ? AND owner_user_id = ?")
-            .bind(expires_at)
-            .bind(public_id)
-            .bind(owner_user_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
+    #[cfg(test)]
+    pub async fn install_file_insert_failure_for_test(&self) -> anyhow::Result<()> {
+        self.query(
+            "CREATE TRIGGER fail_file_publication
+             BEFORE INSERT ON files
+             BEGIN
+               SELECT RAISE(ABORT, 'injected file publication failure');
+             END",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn update_file_metadata(
         &self,
         public_id: &str,
         metadata_json: Option<&str>,
-        thumbnail_hash: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.query("UPDATE files SET metadata_json = ?, thumbnail_hash = ? WHERE public_id = ?")
-            .bind(metadata_json)
-            .bind(thumbnail_hash)
-            .bind(public_id)
-            .execute(&self.pool)
-            .await?;
+        self.query(
+            "UPDATE files SET metadata_json = COALESCE(metadata_json, ?) WHERE public_id = ?",
+        )
+        .bind(metadata_json)
+        .bind(public_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -472,17 +351,15 @@ impl Database {
         let rows = match (metadata, thumbnails) {
             (true, true) => {
                 self.query(
-                    "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                        size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                        visibility, metadata_json, thumbnail_hash, state, created_at
-                     FROM files
-                     WHERE state = 'active'
+                    select_file_items!(
+                        "WHERE state = 'active'
                        AND (expires_at IS NULL OR expires_at > ?)
                        AND (
                             metadata_json IS NULL
                          OR (thumbnail_hash IS NULL AND content_type IN ('image/jpeg', 'image/png', 'image/gif'))
                        )
-                     ORDER BY created_at ASC LIMIT ?",
+                     ORDER BY created_at ASC LIMIT ?"
+                    ),
                 )
                 .bind(util::now_ts())
                 .bind(limit)
@@ -491,14 +368,12 @@ impl Database {
             }
             (true, false) => {
                 self.query(
-                    "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                        size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                        visibility, metadata_json, thumbnail_hash, state, created_at
-                     FROM files
-                     WHERE state = 'active'
+                    select_file_items!(
+                        "WHERE state = 'active'
                        AND (expires_at IS NULL OR expires_at > ?)
                        AND metadata_json IS NULL
-                     ORDER BY created_at ASC LIMIT ?",
+                     ORDER BY created_at ASC LIMIT ?"
+                    ),
                 )
                 .bind(util::now_ts())
                 .bind(limit)
@@ -507,15 +382,13 @@ impl Database {
             }
             (false, true) => {
                 self.query(
-                    "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                        size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                        visibility, metadata_json, thumbnail_hash, state, created_at
-                     FROM files
-                     WHERE state = 'active'
+                    select_file_items!(
+                        "WHERE state = 'active'
                        AND (expires_at IS NULL OR expires_at > ?)
                        AND thumbnail_hash IS NULL
                        AND content_type IN ('image/jpeg', 'image/png', 'image/gif')
-                     ORDER BY created_at ASC LIMIT ?",
+                     ORDER BY created_at ASC LIMIT ?"
+                    ),
                 )
                 .bind(util::now_ts())
                 .bind(limit)
@@ -529,12 +402,8 @@ impl Database {
 
     pub async fn scanner_retry_file_candidates(&self, limit: i64) -> anyhow::Result<Vec<FileItem>> {
         let rows = self
-            .query(
-                "SELECT id, public_id, blob_hash, original_filename, extension, content_type,
-                    size_bytes, image_width, image_height, owner_user_id, delete_token_hash, expires_at,
-                    visibility, metadata_json, thumbnail_hash, state, created_at
-                 FROM files
-                 WHERE state IN ('active', 'quarantined')
+            .query(select_file_items!(
+                "WHERE state IN ('active', 'quarantined')
                    AND EXISTS (
                      SELECT 1 FROM scanner_results failed
                       WHERE failed.item_kind = 'file'
@@ -555,8 +424,8 @@ impl Database {
                                AND lower(resolved.detail) NOT LIKE '%invalid webhook%'
                         )
                    )
-                 ORDER BY created_at ASC LIMIT ?",
-            )
+                 ORDER BY created_at ASC LIMIT ?"
+            ))
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
@@ -569,10 +438,10 @@ impl Database {
         let row = if let Some(user_id) = user_id {
             self.query(
                 "SELECT
-                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN size_bytes ELSE 0 END), 0) AS storage_bytes,
-                    COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS daily_upload_bytes,
-                    COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS monthly_upload_bytes,
-                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN 1 ELSE 0 END), 0) AS item_count
+                    CAST(COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN size_bytes ELSE 0 END), 0) AS BIGINT) AS storage_bytes,
+                    CAST(COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS BIGINT) AS daily_upload_bytes,
+                    CAST(COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS BIGINT) AS monthly_upload_bytes,
+                    CAST(COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN 1 ELSE 0 END), 0) AS BIGINT) AS item_count
                  FROM files WHERE owner_user_id = ?",
             )
             .bind(day_start)
@@ -583,10 +452,10 @@ impl Database {
         } else {
             self.query(
                 "SELECT
-                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN size_bytes ELSE 0 END), 0) AS storage_bytes,
-                    COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS daily_upload_bytes,
-                    COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS monthly_upload_bytes,
-                    COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN 1 ELSE 0 END), 0) AS item_count
+                    CAST(COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN size_bytes ELSE 0 END), 0) AS BIGINT) AS storage_bytes,
+                    CAST(COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS BIGINT) AS daily_upload_bytes,
+                    CAST(COALESCE(SUM(CASE WHEN created_at >= ? THEN size_bytes ELSE 0 END), 0) AS BIGINT) AS monthly_upload_bytes,
+                    CAST(COALESCE(SUM(CASE WHEN state IN ('active', 'quarantined') THEN 1 ELSE 0 END), 0) AS BIGINT) AS item_count
                  FROM files WHERE owner_user_id IS NULL",
             )
             .bind(day_start)
